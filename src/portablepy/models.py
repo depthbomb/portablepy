@@ -31,3 +31,4 @@ class Discovery:
     requirements: list[str] = field(default_factory=list)
     requirement_files: list[Path] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    application_files: tuple[Path, ...] = ()

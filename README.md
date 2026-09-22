@@ -59,9 +59,11 @@ Available placeholders are `{bundle}`, `{app}`, `{data}`, `{python}`, and `{bin}
 
 Launch commands are parsed as argument lists and run without a shell. Use forward slashes for paths inside `--run` and quote arguments containing spaces. Commands may start with `python`, `{python}`, or a console entry point installed by a bundled wheel. Shell pipelines, activation commands, and environment assignments belong in an application wrapper instead.
 
-Project source and resources go in the application folder. Its name hashes every included relative file path and file content after optional compilation. Timestamps and the outer bundle name don't affect this hash. Writable `data/` and dependency wheels live outside that folder and have their own manifest checksums. Use `{app}` when you need its path; the launcher handles the hash automatically.
+The application folder contains the local package selected by `--run`, its resources, imported local helpers, and parent package initializers. Selecting `python -m examples.word_guesser` includes that example without copying sibling examples, repository tests, or build files. `inspect --run "..."` lists the application files before you build.
 
-Packaged projects prefer their installed wheel when importing modules, so generated build files work correctly; loose scripts prefer their bundled source. Common environment, cache, build, editor, and `.env` files are excluded. Add repeatable `--exclude` glob patterns to omit other files. A single-script input copies that script; use its containing directory when it has local modules or resources.
+The folder name hashes every included relative file path and file content after optional compilation. Timestamps and the outer bundle name don't affect this hash. Writable `data/` and dependency wheels live outside that folder and have their own manifest checksums. Use `{app}` when you need its path; the launcher handles the hash automatically.
+
+Packaged project code is supplied by its wheel, so generated build files work correctly. The full project is copied only into a temporary directory for its build backend. Loose scripts include their imported local helpers and adjacent data files. Common environment, cache, build, editor, and `.env` files are excluded. Add repeatable `--exclude` glob patterns to omit other files. Dynamic imports outside the selected package may need an application wrapper or declared package metadata.
 
 ## Bytecode
 

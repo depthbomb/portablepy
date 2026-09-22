@@ -94,11 +94,11 @@ def build_bundle(options: BuildOptions) -> Path:
         app.mkdir(parents=True)
         (bundle / 'data').mkdir()
         source_copy = work / 'source'
-        if discovery.mode != 'wheel':
+        if discovery.mode == 'project':
             copy_sources(discovery.source, source_copy, options.excludes)
-            copy_sources(discovery.source, app, options.excludes)
         else:
             source_copy.mkdir()
+        copy_sources(discovery.source, app, paths=discovery.application_files)
         wheels = bundle / 'wheels'
         collect_wheels(discovery, options, wheels, source_copy)
         if options.compile_mode != 'none':

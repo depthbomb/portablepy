@@ -27,17 +27,17 @@ def launch_target(command: tuple[str, ...], base: Path):
     if kind == 'console':
         return (), target
     if kind == 'module':
-        top = target.split('.')[0]
-        if not top.isidentifier():
+        parts = target.split('.')
+        if any(not part.isidentifier() for part in parts):
             return (), ''
         for root in (base, base / 'src'):
-            package = root / top
-            script = root / (top + '.py')
+            package = root.joinpath(*parts)
+            script = package.with_suffix('.py')
             if package.is_dir():
                 return (package,), ''
             if script.is_file():
-                return (script,), ''
-        return (), ':' + top
+                return (script.parent if (script.parent / '__init__.py').is_file() else script,), ''
+        return (), ':' + parts[0]
     if kind == 'script':
         path = (base / target.replace('{app}/', '')).resolve()
         if path.is_relative_to(base) and path.is_file():

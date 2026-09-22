@@ -101,6 +101,12 @@ def inspect(
                 'inferred_requirements': found.requirements,
                 'requirement_files': [str(path) for path in found.requirement_files],
                 'unresolved_imports': found.unresolved,
+                'application_files': [
+                    path.relative_to(
+                        found.source if found.source.is_dir() else found.source.parent
+                    ).as_posix()
+                    for path in found.application_files
+                ],
             },
             indent=2,
         )

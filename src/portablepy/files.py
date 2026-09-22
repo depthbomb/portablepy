@@ -65,11 +65,13 @@ def selected_files(root: Path, excludes=()):
             yield path
 
 
-def copy_sources(source: Path, destination: Path, excludes=()):
+def copy_sources(source: Path, destination: Path, excludes=(), *, paths=None):
     destination.mkdir(parents=True, exist_ok=True)
-    paths = [source] if source.is_file() else selected_files(source, excludes)
+    if paths is None:
+        paths = [source] if source.is_file() else selected_files(source, excludes)
     for path in paths:
-        relative = Path(path.name) if source.is_file() else path.relative_to(source)
+        base = source.parent if source.is_file() else source
+        relative = path.relative_to(base)
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         copy2(path, target)

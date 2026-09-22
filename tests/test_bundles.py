@@ -164,6 +164,59 @@ def test_packaged_project_imports_built_code_before_source_copy(
     assert 'installed' in launch(extract(output, destination))
 
 
+def test_project_example_bundle_contains_only_example_and_parent_package(
+    tmp_path, wheel_factory, monkeypatch
+):
+    wheel = wheel_factory()
+    source = tmp_path / 'project'
+    source.mkdir()
+    (source / 'pyproject.toml').write_text('[project]\nname="demo-app"\nversion="1.0"\n')
+    library = source / 'src/demo_app'
+    library.mkdir(parents=True)
+    (library / '__init__.py').write_text('import build_only_dependency\n')
+    example = source / 'examples/bot'
+    example.mkdir(parents=True)
+    (source / 'examples/__init__.py').write_text('"""Examples."""\n')
+    (example / '__init__.py').write_text('"""Bot."""\n')
+    (example / '__main__.py').write_text(
+        'from demo_app import VALUE\nfrom pathlib import Path\nprint(VALUE, Path(__file__).with_name("words.json").read_text())\n'
+    )
+    (example / 'words.json').write_text('resource preserved')
+    other = source / 'examples/other'
+    other.mkdir()
+    (other / '__main__.py').write_text('import unrelated_dependency\n')
+    (source / 'examples/old-bundle.zip').write_bytes(b'old archive')
+    (source / 'test.py').write_text('import missing_dev_tool\n')
+
+    def collect(_discovery, _options, wheel_directory, source_copy):
+        # The build backend still gets the full project; the app payload must not.
+        assert (source_copy / 'src/demo_app/__init__.py').is_file()
+        wheel_directory.mkdir()
+        copy2(wheel, wheel_directory / wheel.name)
+
+    monkeypatch.setattr('portablepy.builder.collect_wheels', collect)
+    output = build_bundle(
+        BuildOptions(
+            source,
+            ('python', '-m', 'examples.bot'),
+            tmp_path / 'example.zip',
+            compile_mode='all',
+            strip_source=True,
+        )
+    )
+    manifest = verify_bundle(output)
+    prefix = manifest['app_directory'] + '/'
+    assert {name.removeprefix(prefix) for name in manifest['files'] if name.startswith(prefix)} == {
+        'examples/__init__.pyc',
+        'examples/bot/__init__.pyc',
+        'examples/bot/__main__.pyc',
+        'examples/bot/words.json',
+    }
+    destination = tmp_path / 'example'
+    destination.mkdir()
+    assert 'installed resource preserved' in launch(extract(output, destination))
+
+
 def test_entry_point_build_finds_installed_wheel_without_requirements_or_links(
     tmp_path, wheel_factory
 ):

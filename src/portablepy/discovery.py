@@ -6,8 +6,7 @@ from pathlib import Path
 from subprocess import run
 from sys import executable
 from tomllib import loads as load_toml
-from portablepy.files import selected_files
-from ast import walk, parse, Import, ImportFrom
+from portablepy.sources import trace_sources
 from portablepy.entrypoints import launch_target
 from portablepy.models import Discovery, BuildOptions
 
@@ -101,56 +100,21 @@ def distribution_requirement(name: str, runtime: dict):
     return f'{name}=={runtime["versions"][name]}'
 
 
-def scan_imports(source: Path, runtime: dict, excludes=(), *, seeds=None, ignored=()):
-    base = source if source.is_dir() else source.parent
-    paths: list[Path] = []
-    selected_seeds = tuple(seeds) if seeds is not None else (source,)
-    for seed in selected_seeds:
-        paths.extend(selected_files(seed, excludes) if seed.is_dir() else [seed])
-    local = {}
-    roots = (base, base / 'src', *(seed.parent for seed in selected_seeds if seed.is_file()))
-    for root in roots:
-        if root.is_dir():
-            for path in root.iterdir():
-                if path.is_dir() and not path.name.startswith('.'):
-                    local[path.name] = path
-                elif path.suffix == '.py':
-                    local[path.stem] = path
-    imports = set()
-    visited = set()
-    while paths:
-        path = paths.pop()
-        if path in visited:
-            continue
-        visited.add(path)
-        if path.suffix != '.py':
-            continue
-        try:
-            tree = parse(path.read_bytes(), filename=str(path))
-        except SyntaxError as error:
-            raise ValueError(f'Cannot inspect {path}: {error}') from error
-        found: set[str] = set()
-        for node in walk(tree):
-            if isinstance(node, Import):
-                found.update(alias.name.split('.')[0] for alias in node.names)
-            elif isinstance(node, ImportFrom) and node.level == 0 and node.module:
-                found.add(node.module.split('.')[0])
-        imports.update(found)
-        for name in (found & local.keys()) - set(ignored):
-            dependency = local[name]
-            paths.extend(
-                selected_files(dependency, excludes) if dependency.is_dir() else [dependency]
-            )
-    external = imports - local.keys() - set(runtime['stdlib']) - {'__future__'} - set(ignored)
+def _requirements(imports, runtime):
+    external = imports - set(runtime['stdlib']) - {'__future__'}
     requirements, unresolved = set(), []
     for name in sorted(external):
         candidates = runtime['distributions'].get(name, [])
         if len(candidates) != 1:
             unresolved.append(name)
         else:
-            distribution = candidates[0]
-            requirements.add(distribution_requirement(distribution, runtime))
+            requirements.add(distribution_requirement(candidates[0], runtime))
     return sorted(requirements), unresolved
+
+
+def scan_imports(source: Path, runtime: dict, excludes=(), *, seeds=None, ignored=()):
+    _, imports = trace_sources(source, seeds, excludes, ignored)
+    return _requirements(imports, runtime)
 
 
 def discover(options: BuildOptions) -> Discovery:
@@ -176,30 +140,29 @@ def discover(options: BuildOptions) -> Discovery:
     unresolved = []
     base = source if source.is_dir() else source.parent
     seeds, external_target = launch_target(options.command, base)
-    if mode in ('directory', 'script'):
-        default = (source if source.is_dir() else source.parent) / 'requirements.txt'
-        if not files and default.is_file():
-            files.append(default)
-        if not files and not requirements:
-            requirements, unresolved = scan_imports(
-                source, runtime, options.excludes, seeds=seeds or (() if external_target else None)
-            )
-    elif mode == 'project' and not files and not requirements and seeds:
+    owned: set[str] = set()
+    if mode == 'project':
         project_name = sub(r'[-_.]+', '-', project.get('project', {}).get('name', '')).lower()
-        owned = {
+        owned.update(
             module
             for module, distributions in runtime['distributions'].items()
             if any(sub(r'[-_.]+', '-', name).lower() == project_name for name in distributions)
-        }
+        )
         source_root = source / 'src'
         if source_root.is_dir():
             owned.update(
                 path.stem if path.suffix == '.py' else path.name for path in source_root.iterdir()
             )
-        extra_seeds = tuple(seed for seed in seeds if seed.stem not in owned)
-        requirements, unresolved = scan_imports(
-            source, runtime, options.excludes, seeds=extra_seeds, ignored=owned
-        )
+        if project_name and (source / project_name.replace('-', '_')).is_dir():
+            owned.add(project_name.replace('-', '_'))
+    selected = seeds or (() if external_target or mode in ('wheel', 'project') else None)
+    application_files, imports = trace_sources(source, selected, options.excludes, owned)
+    if mode in ('directory', 'script'):
+        default = base / 'requirements.txt'
+        if not files and default.is_file():
+            files.append(default)
+    if mode != 'wheel' and not files and not requirements:
+        requirements, unresolved = _requirements(imports, runtime)
     if (
         external_target
         and mode in ('script', 'directory')
@@ -220,4 +183,6 @@ def discover(options: BuildOptions) -> Discovery:
     for path in files:
         if not path.is_file():
             raise ValueError(f'Requirements file does not exist: {path}')
-    return Discovery(source, python, runtime, mode, requirements, files, unresolved)
+    return Discovery(
+        source, python, runtime, mode, requirements, files, unresolved, application_files
+    )
