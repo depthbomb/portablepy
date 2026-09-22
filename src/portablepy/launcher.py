@@ -301,8 +301,24 @@ def application_command(root, manifest, python, arguments):
         if manifest.get('prefer_installed', False):
             command.insert(1, '-P')
         if manifest['strip_source']:
+            skip_option_value = False
+            options_ended = False
             for index in range(1, len(command)):
                 value = command[index]
+                if skip_option_value:
+                    skip_option_value = False
+                    continue
+                if not options_ended:
+                    if value == '--':
+                        options_ended = True
+                        continue
+                    if value == '-' or value.startswith(('-c', '-m')):
+                        break
+                    if value in ('-W', '-X', '--check-hash-based-pycs'):
+                        skip_option_value = True
+                        continue
+                    if value.startswith('-'):
+                        continue
                 candidate = app / value
                 if (
                     value.endswith('.py')
@@ -310,6 +326,7 @@ def application_command(root, manifest, python, arguments):
                     and candidate.with_suffix('.pyc').is_file()
                 ):
                     command[index] = value + 'c'
+                break
     else:
         command[0] = str(scripts / command[0])
         if platform == 'win32' and not command[0].lower().endswith('.exe'):

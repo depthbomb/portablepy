@@ -11,6 +11,7 @@ from portablepy.discovery import discover
 from zipfile import ZipFile, ZIP_DEFLATED
 from portablepy.models import BuildOptions
 from portablepy.bytecode import compile_tree
+from portablepy.shortcuts import write_shortcut
 from portablepy.publishing import publish_archive
 from portablepy.files import copy_sources, include_data
 from portablepy.output import default_output, output_excludes, validate_output
@@ -32,6 +33,14 @@ INSTRUCTIONS = """Portable Python application
 Extract this entire folder somewhere writable. Python itself is not included.
 Run: python run.py
 Extra arguments are forwarded to the application: python run.py --help
+
+You can also use the included console launcher: run.cmd on Windows,
+run.command on macOS, or run.sh on Linux. Double-click it to start; Linux
+file managers may require enabling executable scripts or choosing Run.
+If extraction removed executable permissions, run chmod +x run.command
+or chmod +x run.sh. Arguments supplied in a terminal are forwarded.
+Failed launches wait for a key/Enter when started without arguments
+(on Unix, only with an interactive terminal).
 
 The first launch installs the bundled wheels into a private .venv without
 network access. Use the matching CPython version and platform in bundle.json.
@@ -131,7 +140,14 @@ def build_bundle(options: BuildOptions) -> Path:
         base = discovery.source if discovery.source.is_dir() else discovery.source.parent
         seeds = include_data(options.includes, base, bundle)
         (bundle / 'run.py').write_bytes(files('portablepy').joinpath('launcher.py').read_bytes())
-        (bundle / 'README.txt').write_text(INSTRUCTIONS, encoding='utf-8')
+        compiled_launcher = options.compile_mode == 'all'
+        launcher = 'run.pyc' if compiled_launcher else 'run.py'
+        if compiled_launcher:
+            compile_tree(bundle / 'run.py', discovery.python, strip=options.strip_source)
+        shortcut = write_shortcut(bundle, discovery.runtime, compiled=compiled_launcher)
+        (bundle / 'README.txt').write_text(
+            INSTRUCTIONS.replace('run.py', launcher), encoding='utf-8'
+        )
         checksums = {
             path.relative_to(bundle).as_posix(): file_hash(path)
             for path in sorted(bundle.rglob('*'))
@@ -158,7 +174,7 @@ def build_bundle(options: BuildOptions) -> Path:
             file_hash(bundle / MANIFEST) + '\n', encoding='utf-8'
         )
         print(f'Validating {count} wheels in an offline environment...', flush=True)
-        run([str(discovery.python), '-I', str(bundle / 'run.py'), '--portable-setup'], check=True)
+        run([str(discovery.python), '-I', str(bundle / launcher), '--portable-setup'], check=True)
         members = [*checksums, MANIFEST, f'{MANIFEST}.sha256']
         output.parent.mkdir(parents=True, exist_ok=True)
         # Publish only after validation; exclude the generated environment entirely.
@@ -167,9 +183,17 @@ def build_bundle(options: BuildOptions) -> Path:
             with ZipFile(staged, 'w', compression=ZIP_DEFLATED) as archive:
                 for relative in sorted(members):
                     archive.write(bundle / relative, f'{name}/{relative}')
+                    if relative == shortcut and shortcut != 'run.cmd':
+                        entry = archive.getinfo(f'{name}/{relative}')
+                        entry.create_system = 3
+                        entry.external_attr = 0o100755 << 16
         else:
             with open_tar(staged, 'w:gz') as archive:
                 for relative in sorted(members):
-                    archive.add(bundle / relative, arcname=f'{name}/{relative}', recursive=False)
+                    member = archive.gettarinfo(bundle / relative, arcname=f'{name}/{relative}')
+                    if relative == shortcut and shortcut != 'run.cmd':
+                        member.mode = 0o755
+                    with (bundle / relative).open('rb') as stream:
+                        archive.addfile(member, stream)
         publish_archive(staged, output, replace=options.replace)
     return output

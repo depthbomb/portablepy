@@ -56,7 +56,9 @@ def build(
     compile_mode: Annotated[
         Optional[str],
         Option(
-            '--compile', choices=('none', 'app', 'all'), help='Bytecode scope; all includes wheels.'
+            '--compile',
+            choices=('none', 'app', 'all'),
+            help='Bytecode scope; all includes wheels and launcher.',
         ),
     ] = None,
     strip_source: Annotated[

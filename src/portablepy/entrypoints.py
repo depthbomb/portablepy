@@ -11,12 +11,15 @@ def command_target(command: tuple[str, ...]):
         return 'console', command[0]
     arguments = iter(command[1:])
     for argument in arguments:
-        if argument in ('-W', '-X'):
+        if argument in ('-W', '-X', '--check-hash-based-pycs'):
             next(arguments, None)
-        elif argument == '-c':
+        elif argument == '--':
+            target = next(arguments, '')
+            return ('', '') if target == '-' else ('script', target)
+        elif argument == '-' or argument.startswith('-c'):
             return '', ''
-        elif argument == '-m':
-            return 'module', next(arguments, '')
+        elif argument.startswith('-m'):
+            return 'module', argument[2:] or next(arguments, '')
         elif not argument.startswith('-'):
             return 'script', argument
     return '', ''

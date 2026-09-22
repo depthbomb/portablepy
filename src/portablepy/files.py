@@ -46,7 +46,11 @@ def portable_path(value: str) -> PurePosixPath:
 
 def selected_files(root: Path, excludes=()):
     patterns = (*DEFAULT_EXCLUDES, *excludes)
-    for folder, directories, names in root.walk(follow_symlinks=False):
+
+    def walk_error(error):
+        raise error
+
+    for folder, directories, names in root.walk(on_error=walk_error, follow_symlinks=False):
         relative = folder.relative_to(root)
 
         def excluded(name, parent=relative):
@@ -81,6 +85,7 @@ def copy_sources(source: Path, destination: Path, excludes=(), *, paths=None):
 def data_files(specifications, base: Path):
     """Map writable destinations to their initial contents, without copying anything."""
     result: dict[PurePosixPath, Path] = {}
+    directories: set[PurePosixPath] = set()
     for specification in specifications:
         source_text, separator, destination = specification.partition('=')
         if not separator or not source_text:
@@ -94,12 +99,11 @@ def data_files(specifications, base: Path):
         paths = selected_files(source) if source.is_dir() else (source,)
         for path in paths:
             target = relative / path.relative_to(source) if source.is_dir() else relative
-            if any(
-                target == name or target in name.parents or name in target.parents
-                for name in result
-            ):
+            parents = target.parents
+            if target in result or target in directories or any(name in result for name in parents):
                 raise ValueError(f'Included destinations overlap: {target}')
             result[target] = path
+            directories.update(parents)
     return result
 
 

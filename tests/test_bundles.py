@@ -13,8 +13,9 @@ from portablepy.verify import verify_bundle
 
 def launch(root, *arguments, expected=0):
     environment = dict(environ, HTTP_PROXY='http://127.0.0.1:9', HTTPS_PROXY='http://127.0.0.1:9')
+    launcher = root / ('run.pyc' if (root / 'run.pyc').is_file() else 'run.py')
     result = run(
-        [executable, '-I', str(root / 'run.py'), *arguments],
+        [executable, '-I', str(launcher), *arguments],
         cwd=root.parent,
         env=environment,
         capture_output=True,
