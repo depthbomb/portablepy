@@ -94,7 +94,7 @@ def validate_manifest(data):
     if directory is not None:
         if (
             not isinstance(directory, str)
-            or len(directory) != 64
+            or len(directory) not in (8, 64)
             or any(character not in '0123456789abcdef' for character in directory)
         ):
             raise ValueError('Invalid application directory in bundle manifest')
@@ -104,7 +104,7 @@ def validate_manifest(data):
             for name, checksum in data['files'].items()
             if name.startswith(prefix)
         }
-        if contents_hash(checksums) != directory:
+        if contents_hash(checksums)[: len(directory)] != directory:
             raise ValueError('Application directory does not match its contents hash')
 
 

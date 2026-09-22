@@ -49,7 +49,7 @@ Your Python installation needs the standard venv and ensurepip modules.
 Writable files live in data/. Defaults ship in seeds/ and are copied only when
 missing. Extract updates into the same folder to keep your data/.
 Moving the folder or changing the bundle rebuilds only the private environment.
-The application directory is named with a SHA-256 hash of its files and paths.
+The application directory is named with a hash of its files and paths.
 The launcher finds it automatically; its name is recorded in bundle.json.
 
 python run.py --portable-info    Show bundle metadata without setup
@@ -130,6 +130,7 @@ def build_bundle(options: BuildOptions) -> Path:
                 if path.is_file()
             }
         )
+        app_directory = app_directory[:8]  # shorten the hash
         renamed = bundle / app_directory
         if not app.resolve().is_relative_to(
             bundle.resolve()
@@ -169,7 +170,7 @@ def build_bundle(options: BuildOptions) -> Path:
             'profile': options.profile,
         }
         manifest['build_id'] = contents_hash(manifest)
-        (bundle / MANIFEST).write_text(dumps(manifest, indent=2) + '\n', encoding='utf-8')
+        (bundle / MANIFEST).write_text(dumps(manifest) + '\n', encoding='utf-8')
         (bundle / f'{MANIFEST}.sha256').write_text(
             file_hash(bundle / MANIFEST) + '\n', encoding='utf-8'
         )

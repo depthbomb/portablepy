@@ -276,7 +276,7 @@ def test_application_directory_hash_covers_paths_and_resources(tmp_path, monkeyp
     resource.touch()
     second = build('different-name.zip')
     assert first['app_directory'] == second['app_directory']
-    assert len(first['app_directory']) == 64
+    assert len(first['app_directory']) == 8
     assert first['app_directory'] + '/resource.txt' in first['files']
     resource.write_text('changed')
     third = build('changed.zip')

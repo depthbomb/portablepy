@@ -1,7 +1,7 @@
 from pathlib import Path
-from pytest import raises
 from shutil import copytree
 from json import dumps, loads
+from pytest import mark, raises
 from portablepy import launcher
 from portablepy.models import BuildOptions
 from portablepy.builder import build_bundle
@@ -116,6 +116,42 @@ def test_rebuild_does_not_bundle_its_previous_output(tmp_path, monkeypatch):
     manifest = verify_bundle(output)
     files = [name for name in manifest['files'] if name.startswith(manifest['app_directory'] + '/')]
     assert files == [manifest['app_directory'] + '/main.py']
+
+
+@mark.parametrize('length', [8, 64])
+def test_application_directory_validates_hash_prefix(length):
+    checksums = {'main.py': '0' * 64}
+    directory = contents_hash(checksums)[:length]
+    manifest = {
+        'schema': 1,
+        'name': 'app',
+        'runtime': {},
+        'command': ['python', 'main.py'],
+        'python_command': True,
+        'strip_source': False,
+        'app_directory': directory,
+        'files': {directory + '/main.py': checksums['main.py']},
+    }
+    validate_manifest(manifest)
+    manifest['files'][directory + '/main.py'] = '1' * 64
+    with raises(ValueError, match='Application directory does not match its contents hash'):
+        validate_manifest(manifest)
+
+
+@mark.parametrize('directory', ['', 'a' * 7, 'a' * 9, 'a' * 63, 'a' * 65, '../abcde', 'g' * 8, 8])
+def test_application_directory_rejects_invalid_names(directory):
+    manifest = {
+        'schema': 1,
+        'name': 'app',
+        'runtime': {},
+        'command': ['python', 'main.py'],
+        'python_command': True,
+        'strip_source': False,
+        'app_directory': directory,
+        'files': {},
+    }
+    with raises(ValueError, match='Invalid application directory'):
+        validate_manifest(manifest)
 
 
 def test_manifest_rejects_unsafe_seeds_and_stale_build_id():
