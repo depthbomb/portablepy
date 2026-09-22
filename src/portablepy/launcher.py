@@ -28,6 +28,13 @@ def file_hash(path):
     return digest.hexdigest()
 
 
+def contents_hash(checksums):
+    encoded = dumps(checksums, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode(
+        'utf-8'
+    )
+    return sha256(encoded).hexdigest()
+
+
 def load_manifest(root):
     path = root / MANIFEST
     expected = (root / f'{MANIFEST}.sha256').read_text(encoding='utf-8').strip()
@@ -62,6 +69,22 @@ def validate_manifest(data):
             or any(character not in '0123456789abcdef' for character in checksum)
         ):
             raise ValueError('Invalid file entry in bundle manifest')
+    directory = data.get('app_directory')
+    if directory is not None:
+        if (
+            not isinstance(directory, str)
+            or len(directory) != 64
+            or any(character not in '0123456789abcdef' for character in directory)
+        ):
+            raise ValueError('Invalid application directory in bundle manifest')
+        prefix = directory + '/'
+        checksums = {
+            name.removeprefix(prefix): checksum
+            for name, checksum in data['files'].items()
+            if name.startswith(prefix)
+        }
+        if contents_hash(checksums) != directory:
+            raise ValueError('Application directory does not match its contents hash')
 
 
 def verify_files(root, manifest, *, include_data=False):
@@ -76,6 +99,15 @@ def verify_files(root, manifest, *, include_data=False):
             raise ValueError(f'Bundle file points outside the bundle: {name}')
         if not path.is_file() or file_hash(path) != expected:
             raise ValueError(f'Bundle checksum failed: {name}')
+    directory = manifest.get('app_directory')
+    if directory:
+        app = root / directory
+        if not app.resolve().is_relative_to(root.resolve()):
+            raise ValueError('Application directory points outside the bundle')
+        actual = {path.relative_to(root).as_posix() for path in app.rglob('*') if path.is_file()}
+        expected_files = {name for name in manifest['files'] if name.startswith(directory + '/')}
+        if actual != expected_files:
+            raise ValueError('Application files do not match the manifest')
 
 
 def check_runtime(expected):
@@ -96,8 +128,8 @@ def check_runtime(expected):
         )
 
 
-def prepare(root):
-    (root / 'app').mkdir(exist_ok=True)
+def prepare(root, manifest):
+    (root / manifest.get('app_directory', 'app')).mkdir(exist_ok=True)
     (root / 'data').mkdir(exist_ok=True)
     environment = root / ENVIRONMENT
     if environment.resolve() != root.resolve() / ENVIRONMENT:
@@ -171,9 +203,10 @@ def prepare(root):
 
 def application_command(root, manifest, python, arguments):
     scripts = python.parent
+    app = root / manifest.get('app_directory', 'app')
     replacements = {
         '{bundle}': str(root),
-        '{app}': str(root / 'app'),
+        '{app}': str(app),
         '{data}': str(root / 'data'),
         '{python}': str(python),
         '{bin}': str(scripts),
@@ -190,7 +223,7 @@ def application_command(root, manifest, python, arguments):
         if manifest['strip_source']:
             for index in range(1, len(command)):
                 value = command[index]
-                candidate = root / 'app' / value
+                candidate = app / value
                 if (
                     value.endswith('.py')
                     and not candidate.exists()
@@ -216,14 +249,15 @@ def main(arguments=None):
         if arguments == ['--portable-verify']:
             print('Bundle checksums passed (writable data is preserved).')
             return 0
-        python = prepare(root)
+        python = prepare(root, manifest)
         if arguments == ['--portable-setup']:
             return 0
         command = application_command(root, manifest, python, arguments)
         environment = dict(environ)
         environment.pop('PYTHONHOME', None)
         separator = ';' if platform == 'win32' else ':'
-        import_paths = [str(root / 'app'), str(root / 'app/src')]
+        app = root / manifest.get('app_directory', 'app')
+        import_paths = [str(app), str(app / 'src')]
         if manifest.get('prefer_installed', False):
             variables = {'base': str(root / ENVIRONMENT), 'platbase': str(root / ENVIRONMENT)}
             import_paths[:0] = [
@@ -231,7 +265,7 @@ def main(arguments=None):
                 get_path('platlib', vars=variables),
             ]
             for argument in command[1:]:
-                script = root / 'app' / argument
+                script = app / argument
                 if script.suffix in ('.py', '.pyc') and script.is_file():
                     import_paths.append(str(script.parent))
                     break
@@ -239,7 +273,7 @@ def main(arguments=None):
         environment['PYTHONNOUSERSITE'] = '1'
         environment['PYTHONDONTWRITEBYTECODE'] = '1'
         environment['PATH'] = str(python.parent) + separator + environment.get('PATH', '')
-        with Popen(command, cwd=root / 'app', env=environment) as child:
+        with Popen(command, cwd=app, env=environment) as child:
             while True:
                 try:
                     return child.wait()

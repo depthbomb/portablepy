@@ -23,6 +23,7 @@ DEFAULT_EXCLUDES = (
     '*.pyo',
     'build',
     'dist',
+    'target',
     '.env',
     '.env.*',
 )

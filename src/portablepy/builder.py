@@ -12,8 +12,8 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from portablepy.models import BuildOptions
 from portablepy.bytecode import compile_tree
 from portablepy.files import copy_sources, include_data
-from portablepy.launcher import MANIFEST, file_hash, SCHEMA_VERSION
 from portablepy.wheels import collect_wheels, repack_bytecode, write_requirements
+from portablepy.launcher import MANIFEST, file_hash, contents_hash, SCHEMA_VERSION
 
 RUNTIME_FIELDS = (
     'implementation',
@@ -38,6 +38,8 @@ Your Python installation needs the standard venv and ensurepip modules.
 
 Writable files live in data/. Keep those files when updating the bundle.
 Moving the folder or changing the bundle rebuilds only the private environment.
+The application directory is named with a SHA-256 hash of its files and paths.
+The launcher finds it automatically; its name is recorded in bundle.json.
 
 python run.py --portable-setup   Set up without starting the application
 python run.py --portable-verify  Verify immutable files without starting it
@@ -104,6 +106,19 @@ def build_bundle(options: BuildOptions) -> Path:
                 repack_bytecode(
                     wheel, discovery.python, discovery.runtime, strip=options.strip_source
                 )
+        app_directory = contents_hash(
+            {
+                path.relative_to(app).as_posix(): file_hash(path)
+                for path in app.rglob('*')
+                if path.is_file()
+            }
+        )
+        renamed = bundle / app_directory
+        if not app.resolve().is_relative_to(
+            bundle.resolve()
+        ) or not renamed.resolve().is_relative_to(bundle.resolve()):
+            raise ValueError('Application directory must stay inside the bundle')
+        app.rename(renamed)
         count = write_requirements(wheels, bundle / 'requirements.txt')
         base = discovery.source if discovery.source.is_dir() else discovery.source.parent
         for specification in options.includes:
@@ -118,6 +133,7 @@ def build_bundle(options: BuildOptions) -> Path:
         manifest = {
             'schema': SCHEMA_VERSION,
             'name': name,
+            'app_directory': app_directory,
             'runtime': {key: discovery.runtime[key] for key in RUNTIME_FIELDS},
             'command': list(options.command),
             'python_command': python_command,

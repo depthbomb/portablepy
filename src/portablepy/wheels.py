@@ -10,8 +10,8 @@ from base64 import urlsafe_b64encode
 from email.parser import BytesParser
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile, ZIP_DEFLATED
-from portablepy.files import portable_path
 from portablepy.bytecode import compile_tree
+from portablepy.files import copy_sources, portable_path
 
 
 def digest(data: bytes) -> str:
@@ -148,11 +148,18 @@ def collect_wheels(discovery, options, destination: Path, source_copy: Path):
         command.append('--no-index')
     for path in options.find_links:
         command.extend(['--find-links', path])
-    run(
-        [*command, *inputs],
-        cwd=discovery.source.parent if discovery.source.is_file() else discovery.source,
-        check=True,
-    )
+    with TemporaryDirectory(prefix='portablepy-local-') as temporary:
+        for index, requirement in enumerate(inputs):
+            candidate = Path(requirement)
+            if candidate.is_absolute() and candidate.is_dir() and candidate != source_copy:
+                copied = Path(temporary) / str(index)
+                copy_sources(candidate, copied)
+                inputs[index] = str(copied)
+        run(
+            [*command, *inputs],
+            cwd=discovery.source.parent if discovery.source.is_file() else discovery.source,
+            check=True,
+        )
     for path in destination.glob('*.whl'):
         wheel_metadata(path)
 

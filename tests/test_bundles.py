@@ -57,7 +57,7 @@ def test_script_bundle_relocates_preserves_data_and_checks_tampering(tmp_path, s
     )
     manifest = verify_bundle(output)
     assert not any('.env' in name for name in manifest['files'])
-    assert ('app/main.py' in manifest['files']) is not strip
+    assert (manifest['app_directory'] + '/main.py' in manifest['files']) is not strip
     extracted = tmp_path / 'extracted'
     extracted.mkdir()
     root = extract(output, extracted)
@@ -162,3 +162,64 @@ def test_packaged_project_imports_built_code_before_source_copy(
     destination = tmp_path / 'generated'
     destination.mkdir()
     assert 'installed' in launch(extract(output, destination))
+
+
+def test_entry_point_build_finds_installed_wheel_without_requirements_or_links(
+    tmp_path, wheel_factory
+):
+    wheel = wheel_factory()
+    environment = tmp_path / 'build-environment'
+    run([executable, '-m', 'venv', str(environment)], check=True)
+    python = environment / (
+        'Scripts/python.exe' if (environment / 'Scripts').exists() else 'bin/python'
+    )
+    run([str(python), '-m', 'pip', 'install', '--no-index', str(wheel)], check=True)
+    source = tmp_path / 'application'
+    source.mkdir()
+    (source / 'main.py').write_text('from demo_app import VALUE\nprint(VALUE)\n')
+    (source / 'unrelated_test.py').write_text('import nonexistent_test_dependency\n')
+    output = build_bundle(
+        BuildOptions(
+            source, ('python', 'main.py'), tmp_path / 'automatic.zip', python, no_index=True
+        )
+    )
+    manifest = verify_bundle(output)
+    assert len([name for name in manifest['files'] if name.endswith('.whl')]) == 1
+    destination = tmp_path / 'automatic'
+    destination.mkdir()
+    assert 'installed' in launch(extract(output, destination))
+
+
+def test_application_directory_hash_covers_paths_and_resources(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    source.mkdir()
+    (source / 'main.py').write_text('print("hello")\n')
+    resource = source / 'resource.txt'
+    resource.write_text('initial')
+    # Other integration tests exercise offline setup; these builds compare application snapshots.
+    monkeypatch.setattr('portablepy.builder.run', lambda *_args, **_kwargs: None)
+
+    def build(name):
+        output = build_bundle(BuildOptions(source, ('python', 'main.py'), tmp_path / name))
+        return verify_bundle(output)
+
+    first = build('first.zip')
+    resource.touch()
+    second = build('different-name.zip')
+    assert first['app_directory'] == second['app_directory']
+    assert len(first['app_directory']) == 64
+    assert first['app_directory'] + '/resource.txt' in first['files']
+    resource.write_text('changed')
+    third = build('changed.zip')
+    assert third['app_directory'] != first['app_directory']
+    renamed = source / 'renamed.txt'
+    assert renamed.resolve().is_relative_to(source.resolve())
+    resource.rename(renamed)
+    fourth = build('renamed.zip')
+    assert fourth['app_directory'] != third['app_directory']
+    destination = tmp_path / 'extracted'
+    destination.mkdir()
+    root = extract(tmp_path / 'renamed.zip', destination)
+    (root / fourth['app_directory'] / 'unexpected.py').write_text('print("unlisted")\n')
+    with raises(ValueError, match='Application files do not match'):
+        verify_bundle(root)

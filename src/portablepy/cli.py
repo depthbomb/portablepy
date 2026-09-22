@@ -75,9 +75,12 @@ def inspect(
     source: Annotated[Path, Argument()],
     *,
     python: Annotated[Optional[Path], Option()] = None,
+    run: Annotated[str, Option(help='Use the same launch command as the build.')] = '',
     exclude: Annotated[list[str], Option()] = EMPTY_OPTIONS,
 ) -> int:
-    found = discover(BuildOptions(source, (), Path('unused.zip'), python, excludes=tuple(exclude)))
+    found = discover(
+        BuildOptions(source, tuple(split(run)), Path('unused.zip'), python, excludes=tuple(exclude))
+    )
     print(
         dumps(
             {
@@ -87,7 +90,7 @@ def inspect(
                 'runtime': {
                     key: value
                     for key, value in found.runtime.items()
-                    if key not in ('stdlib', 'distributions', 'versions')
+                    if key not in ('stdlib', 'distributions', 'versions', 'origins', 'commands')
                 },
                 'inferred_requirements': found.requirements,
                 'requirement_files': [str(path) for path in found.requirement_files],
