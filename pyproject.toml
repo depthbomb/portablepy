@@ -4,7 +4,7 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'portablepy'
-version = '0.1.0'
+version = '0.2.0'
 description = 'Build portable Python application bundles with verified offline wheels'
 readme = 'README.md'
 requires-python = '>=3.14'
