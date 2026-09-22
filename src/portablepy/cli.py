@@ -23,7 +23,13 @@ def build(
     source: Annotated[Path, Argument()],
     *,
     run: Annotated[str, Option('--command', help='Application command, such as python -m my_app.')],
-    output: Annotated[Path, Option('-o', help='New .zip or .tar.gz archive.')],
+    output: Annotated[
+        Optional[Path],
+        Option(
+            '-o',
+            help='Archive path; defaults to a platform-specific name in the current directory.',
+        ),
+    ] = None,
     python: Annotated[
         Optional[Path], Option(help='Target interpreter; defaults to the project .venv.')
     ] = None,

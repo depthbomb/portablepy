@@ -12,6 +12,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from portablepy.models import BuildOptions
 from portablepy.bytecode import compile_tree
 from portablepy.files import copy_sources, include_data
+from portablepy.output import default_output, validate_output
 from portablepy.wheels import collect_wheels, repack_bytecode, write_requirements
 from portablepy.launcher import MANIFEST, file_hash, contents_hash, SCHEMA_VERSION
 
@@ -69,12 +70,13 @@ def build_bundle(options: BuildOptions) -> Path:
     if options.strip_source and options.compile_mode == 'none':
         raise ValueError('--strip-source requires --compile app or --compile all')
     python_command = _python_command(options.command)
-    output = options.output.expanduser().resolve()
-    if not output.name.endswith(('.zip', '.tar.gz')):
-        raise ValueError('Output must end with .zip or .tar.gz')
-    if output.exists():
-        raise ValueError(f'Output already exists: {output}')
+    output = options.output.expanduser().resolve() if options.output is not None else None
+    if output is not None:
+        validate_output(output)
     discovery = discover(options)
+    if output is None:
+        output = default_output(discovery, options.command)
+        validate_output(output)
     if discovery.unresolved:
         raise ValueError(
             'Unresolved or ambiguous imports: '

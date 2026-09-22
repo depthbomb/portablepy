@@ -8,10 +8,13 @@ Requires CPython 3.14 or later. From this checkout, use `python -m pip install .
 
 ```sh
 portablepy build ./my-app --run "python -m my_app" --output my-app.zip
+portablepy build ./my-app --run "python -m my_app"
 portablepy build ./my-app --run "my-console-command" --output my-app.tar.gz
 portablepy build ./script.py --run "python script.py" --output script.zip
 portablepy build ./my_app-1.0-py3-none-any.whl --run "python -m my_app" --output my-app.zip
 ```
+
+`--output` is optional. By default, the archive is created in your current directory using the project and launch target names, platform, architecture, and Python version. For example: `skribblpy-word-guesser-auto-windows-x64-py314.zip`. Windows defaults to ZIP; Linux and macOS default to tar.gz. Existing archives aren't overwritten. Use `--output` to choose another name, location, or supported archive format.
 
 Build on the target operating system and architecture. The tool uses the source project's `.venv` when available, otherwise its own interpreter. Use `--python PATH` to select another interpreter. Each bundle records its Python minor version, architecture, and interpreter ABI. It doesn't include Python itself.
 

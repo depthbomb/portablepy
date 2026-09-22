@@ -9,7 +9,7 @@ from dataclasses import field, dataclass
 class BuildOptions:
     source: Path
     command: tuple[str, ...]
-    output: Path
+    output: Optional[Path] = None
     python: Optional[Path] = None
     requirements: tuple[str, ...] = ()
     requirement_files: tuple[Path, ...] = ()
