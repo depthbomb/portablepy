@@ -2,17 +2,18 @@
 
 from os import environ
 from pathlib import Path
-from shutil import rmtree
 from hashlib import sha256
 from struct import calcsize
 from venv import EnvBuilder
 from platform import machine
 from json import dumps, loads
+from shutil import rmtree, copyfileobj
 from importlib.util import MAGIC_NUMBER
 from sysconfig import get_path, get_config_var
 from subprocess import run, Popen, CalledProcessError
 from sys import argv, platform, executable, version_info, implementation
 
+COPY_BUFFER_SIZE = 1024 * 1024
 SCHEMA_VERSION = 1
 MANIFEST = 'bundle.json'
 ENVIRONMENT = '.venv'
@@ -23,7 +24,7 @@ MARKER = '.portablepy-ready.json'
 def file_hash(path):
     digest = sha256()
     with path.open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
+        for block in iter(lambda: stream.read(COPY_BUFFER_SIZE), b''):
             digest.update(block)
     return digest.hexdigest()
 
@@ -69,6 +70,26 @@ def validate_manifest(data):
             or any(character not in '0123456789abcdef' for character in checksum)
         ):
             raise ValueError('Invalid file entry in bundle manifest')
+    if 'build_id' in data and data['build_id'] != contents_hash(
+        {key: value for key, value in data.items() if key != 'build_id'}
+    ):
+        raise ValueError('Bundle build ID does not match its contents')
+    seeds = data.get('seed_files', {})
+    if not isinstance(seeds, dict):
+        raise ValueError('Invalid seed file mapping')
+    for destination, source in seeds.items():
+        for value, prefix in ((destination, 'data'), (source, 'seeds')):
+            if (
+                not isinstance(value, str)
+                or '\\' in value
+                or ':' in value
+                or '..' in Path(value).parts
+                or len(Path(value).parts) < 2
+                or Path(value).parts[0] != prefix
+            ):
+                raise ValueError('Invalid seed file path')
+        if source not in data['files']:
+            raise ValueError(f'Seed file is missing from checksums: {source}')
     directory = data.get('app_directory')
     if directory is not None:
         if (
@@ -128,9 +149,68 @@ def check_runtime(expected):
         )
 
 
+def seed_data(root, manifest):
+    """Install missing defaults; never replace a writable file."""
+    data = root / 'data'
+    if data.resolve() != root.resolve() / 'data':
+        raise ValueError('Writable data must not be a symlink or junction')
+    data.mkdir(exist_ok=True)
+    lock = root / '.portablepy-data.lock'
+    try:
+        handle = lock.open('x', encoding='utf-8')
+    except FileExistsError as error:
+        raise ValueError(
+            'Another launcher is preparing data; retry after it finishes. If interrupted, remove .portablepy-data.lock.'
+        ) from error
+    try:
+        handle.close()
+        for destination, source in manifest.get('seed_files', {}).items():
+            target = root / destination
+            if target.resolve() != root.resolve() / destination:
+                raise ValueError(f'Writable file must not use a symlink or junction: {destination}')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                if not target.is_file():
+                    raise ValueError(f'Writable destination is not a file: {destination}')
+                continue
+            with (root / source).open('rb') as initial:
+                try:
+                    output = target.open('xb')
+                except FileExistsError:
+                    if not target.is_file():
+                        raise ValueError(
+                            f'Writable destination is not a file: {destination}'
+                        ) from None
+                    continue
+                try:
+                    with output:
+                        copyfileobj(initial, output)
+                except BaseException:
+                    target.unlink(missing_ok=True)
+                    raise
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def bundle_info(manifest):
+    return {
+        'name': manifest['name'],
+        'build_id': manifest.get('build_id', contents_hash(manifest)),
+        'runtime': manifest['runtime'],
+        'command': manifest['command'],
+        'app_directory': manifest.get('app_directory', 'app'),
+        'data_directory': 'data',
+        'compile': manifest.get('compile', 'none'),
+        'strip_source': manifest['strip_source'],
+        'profile': manifest.get('profile'),
+        'dependencies': manifest.get('dependencies', []),
+        'seed_files': manifest.get('seed_files', {}),
+    }
+
+
 def prepare(root, manifest):
     (root / manifest.get('app_directory', 'app')).mkdir(exist_ok=True)
-    (root / 'data').mkdir(exist_ok=True)
+    seed_data(root, manifest)
     environment = root / ENVIRONMENT
     if environment.resolve() != root.resolve() / ENVIRONMENT:
         raise ValueError('The private environment must not be a symlink or junction')
@@ -244,8 +324,11 @@ def main(arguments=None):
     root = Path(__file__).resolve().parent
     try:
         manifest = load_manifest(root)
-        check_runtime(manifest['runtime'])
         verify_files(root, manifest)
+        if arguments == ['--portable-info']:
+            print(dumps(bundle_info(manifest), indent=2))
+            return 0
+        check_runtime(manifest['runtime'])
         if arguments == ['--portable-verify']:
             print('Bundle checksums passed (writable data is preserved).')
             return 0

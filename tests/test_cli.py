@@ -1,3 +1,4 @@
+from json import loads
 from subprocess import run
 from sys import executable
 from portablepy.verify import verify_bundle
@@ -61,3 +62,33 @@ def test_cli_build_defaults_output_to_current_directory(tmp_path):
     repeated = run(command, cwd=tmp_path, capture_output=True, text=True)
     assert repeated.returncode == 1 and 'already exists' in repeated.stderr
     assert archive.read_bytes() == before
+
+
+def test_cli_profile_build_and_inspection(tmp_path):
+    source = tmp_path / 'app'
+    source.mkdir()
+    (source / 'main.py').write_text('print("profile app")')
+    (tmp_path / 'pyproject.toml').write_text(
+        "[tool.portablepy]\nsource = 'app'\nrun = 'python main.py'\noutput = 'profile.zip'\n"
+        "[tool.portablepy.profiles.release]\ncompile = 'all'\nstrip-source = true\nno-index = true\n"
+    )
+    result = run(
+        [executable, '-m', 'portablepy', 'inspect', '--profile', 'release', '--resolve'],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    report = loads(result.stdout)
+    assert report['profile'] == 'release' and report['size']['includes_wheels']
+    assert not (tmp_path / 'profile.zip').exists()
+    built = run(
+        [executable, '-m', 'portablepy', 'build', '--profile', 'release', '--keep-source'],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert built.returncode == 0, built.stdout + built.stderr
+    manifest = verify_bundle(tmp_path / 'profile.zip')
+    assert not manifest['strip_source'] and manifest['compile'] == 'all'
+    assert manifest['app_directory'] + '/main.py' in manifest['files']

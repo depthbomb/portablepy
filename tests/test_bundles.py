@@ -1,3 +1,4 @@
+from json import loads
 from os import environ
 from shutil import copy2
 from subprocess import run
@@ -61,8 +62,22 @@ def test_script_bundle_relocates_preserves_data_and_checks_tampering(tmp_path, s
     extracted = tmp_path / 'extracted'
     extracted.mkdir()
     root = extract(output, extracted)
+    assert not (root / 'data').exists()
+    info = loads(launch(root, '--portable-info'))
+    assert info['name'] == manifest['name'] and len(info['build_id']) == 64
+    assert info['seed_files'] == {'data/state.txt': 'seeds/state.txt'}
+    assert not (root / '.venv').exists() and not (root / 'data').exists()
+    assert not any(name.startswith('data/') for name in manifest['files'])
     assert "initial ['extra']" in launch(root, 'extra')
     verify_bundle(root)
+    # Extracting a fresh copy over an existing bundle must preserve learned state.
+    if suffix == '.zip':
+        with ZipFile(output) as archive:
+            archive.extractall(extracted)
+    else:
+        with open_tar(output, 'r:gz') as archive:
+            archive.extractall(extracted, filter='data')
+    assert (root / 'data/state.txt').read_text() == 'learned'
     assert 'Setting up' not in launch(root)
     moved = extracted / 'moved with spaces'
     assert root.resolve().is_relative_to(extracted.resolve()) and moved.resolve().is_relative_to(

@@ -9,6 +9,7 @@ from tomllib import loads as load_toml
 from portablepy.sources import trace_sources
 from portablepy.entrypoints import launch_target
 from portablepy.models import Discovery, BuildOptions
+from portablepy.output import output_paths, default_output
 
 PROBE = """
 from sys import version_info, implementation, platform, stdlib_module_names
@@ -156,7 +157,16 @@ def discover(options: BuildOptions) -> Discovery:
         if project_name and (source / project_name.replace('-', '_')).is_dir():
             owned.add(project_name.replace('-', '_'))
     selected = seeds or (() if external_target or mode in ('wheel', 'project') else None)
-    application_files, imports = trace_sources(source, selected, options.excludes, owned)
+    file_reasons: dict[Path, list[str]] = {}
+    import_reasons: dict[str, list[str]] = {}
+    application_files, imports = trace_sources(
+        source,
+        selected,
+        options.excludes,
+        owned,
+        file_reasons=file_reasons,
+        import_reasons=import_reasons,
+    )
     if mode in ('directory', 'script'):
         default = base / 'requirements.txt'
         if not files and default.is_file():
@@ -183,6 +193,21 @@ def discover(options: BuildOptions) -> Discovery:
     for path in files:
         if not path.is_file():
             raise ValueError(f'Requirements file does not exist: {path}')
-    return Discovery(
-        source, python, runtime, mode, requirements, files, unresolved, application_files
+    result = Discovery(
+        source,
+        python,
+        runtime,
+        mode,
+        requirements,
+        files,
+        unresolved,
+        application_files,
+        file_reasons,
+        import_reasons,
     )
+    output = options.output or default_output(result, options.command)
+    artifacts = set(output_paths(output))
+    result.application_files = tuple(
+        path for path in application_files if path.resolve() not in artifacts
+    )
+    return result

@@ -56,8 +56,24 @@ def default_output(discovery: Discovery, command: tuple[str, ...]) -> Path:
     return Path.cwd() / f'{project_name}-auto-{platform}-{architecture}-py{version}{extension}'
 
 
-def validate_output(path: Path):
+def validate_output(path: Path, *, replace=False):
     if not path.name.endswith(('.zip', '.tar.gz')):
         raise ValueError('Output must end with .zip or .tar.gz')
-    if path.exists():
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f'Output must be a regular file: {path}')
+    if path.exists() and not replace:
         raise ValueError(f'Output already exists: {path}')
+
+
+def output_paths(path: Path):
+    path = path.expanduser().resolve()
+    return path, path.with_name(path.name + '.sha256'), path.with_name(path.name + '.lock')
+
+
+def output_excludes(source: Path, output: Path):
+    base = source if source.is_dir() else source.parent
+    return tuple(
+        path.relative_to(base).as_posix()
+        for path in output_paths(output)
+        if path.is_relative_to(base)
+    )

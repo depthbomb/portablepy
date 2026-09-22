@@ -1,5 +1,6 @@
 """Wheel resolution, integrity checking, and bytecode repacking."""
 
+from sys import stderr
 from io import StringIO
 from pathlib import Path
 from subprocess import run
@@ -9,6 +10,7 @@ from hashlib import new, sha256
 from base64 import urlsafe_b64encode
 from email.parser import BytesParser
 from tempfile import TemporaryDirectory
+from portablepy.launcher import file_hash
 from zipfile import ZipFile, ZIP_DEFLATED
 from portablepy.bytecode import compile_tree
 from portablepy.files import copy_sources, portable_path
@@ -116,7 +118,9 @@ def repack_bytecode(path: Path, python: Path, runtime: dict, *, strip=False) -> 
     return destination
 
 
-def collect_wheels(discovery, options, destination: Path, source_copy: Path):
+def collect_wheels(
+    discovery, options, destination: Path, source_copy: Path, *, log_to_stderr=False
+):
     destination.mkdir(parents=True, exist_ok=True)
     inputs = list(discovery.requirements)
     if discovery.mode == 'project':
@@ -157,6 +161,7 @@ def collect_wheels(discovery, options, destination: Path, source_copy: Path):
                 inputs[index] = str(copied)
         run(
             [*command, *inputs],
+            stdout=stderr if log_to_stderr else None,
             cwd=discovery.source.parent if discovery.source.is_file() else discovery.source,
             check=True,
         )
@@ -177,3 +182,20 @@ def write_requirements(wheels: Path, output: Path):
         )
     output.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return len(lines)
+
+
+def wheel_inventory(wheels: Path):
+    result = []
+    for path in sorted(wheels.glob('*.whl')):
+        metadata = wheel_metadata(path)
+        result.append(
+            {
+                'name': metadata['Name'],
+                'version': metadata['Version'],
+                'wheel': path.name,
+                'sha256': file_hash(path),
+                'bytes': path.stat().st_size,
+                'requires_dist': metadata.get_all('Requires-Dist', []),
+            }
+        )
+    return result

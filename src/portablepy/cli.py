@@ -2,16 +2,15 @@
 
 from json import dumps
 from sys import stderr
-from shlex import split
 from pathlib import Path
 from tarfile import TarError
 from zipfile import BadZipFile
-from portablepy.discovery import discover
 from subprocess import CalledProcessError
-from portablepy.models import BuildOptions
 from portablepy.builder import build_bundle
 from portablepy.verify import verify_bundle
 from typing import Any, Optional, Annotated
+from portablepy.config import resolve_options
+from portablepy.inspection import inspection_report
 from argly import App, Flag, Option, command, Argument
 
 
@@ -20,9 +19,17 @@ EMPTY_OPTIONS: Any = ()  # Argly accepts tuples as defaults and passes fresh lis
 
 @command('build', summary='Build a verified portable application archive.')
 def build(
-    source: Annotated[Path, Argument()],
+    source: Annotated[Optional[Path], Argument()] = None,
     *,
-    run: Annotated[str, Option('--command', help='Application command, such as python -m my_app.')],
+    run: Annotated[
+        Optional[str], Option('--command', help='Application command, such as python -m my_app.')
+    ] = None,
+    profile: Annotated[
+        Optional[str], Option(help='Named build profile from pyproject.toml.')
+    ] = None,
+    config: Annotated[
+        Optional[Path], Option(help='Explicit pyproject.toml configuration file.')
+    ] = None,
     output: Annotated[
         Optional[Path],
         Option(
@@ -47,71 +54,106 @@ def build(
     ] = EMPTY_OPTIONS,
     no_index: Annotated[bool, Flag(help='Resolve from local packages only.')] = False,
     compile_mode: Annotated[
-        str,
+        Optional[str],
         Option(
             '--compile', choices=('none', 'app', 'all'), help='Bytecode scope; all includes wheels.'
         ),
-    ] = 'none',
+    ] = None,
     strip_source: Annotated[
         bool, Flag(help='Remove compiled .py files; requires --compile.')
     ] = False,
+    keep_source: Annotated[bool, Flag(help='Keep sources, overriding a profile.')] = False,
+    use_index: Annotated[bool, Flag(help='Allow index access, overriding a profile.')] = False,
+    replace: Annotated[
+        bool, Flag(help='Replace an archive only after the new build passes validation.')
+    ] = False,
+    no_replace: Annotated[bool, Flag(help='Refuse replacement, overriding a profile.')] = False,
 ) -> int:
-    options = BuildOptions(
+    for enabled, disabled, label in (
+        (strip_source, keep_source, 'strip-source/keep-source'),
+        (no_index, use_index, 'no-index/use-index'),
+        (replace, no_replace, 'replace/no-replace'),
+    ):
+        if enabled and disabled:
+            raise ValueError(f'Choose only one of --{label.replace("/", " and --")}')
+    options = resolve_options(
         source,
-        tuple(split(run)),
-        output,
-        python,
-        tuple(requirement),
-        tuple(requirements),
-        tuple(extra),
-        tuple(include),
-        tuple(exclude),
-        tuple(find_links),
-        no_index,
-        compile_mode,
-        strip_source,
+        profile=profile,
+        config=config,
+        **{
+            'run': run,
+            'output': output,
+            'python': python,
+            'requirement': requirement or None,
+            'requirements': requirements or None,
+            'extra': extra or None,
+            'include': include or None,
+            'exclude': exclude or None,
+            'find-links': find_links or None,
+            'compile': compile_mode,
+            'no-index': False if use_index else True if no_index else None,
+            'strip-source': False if keep_source else True if strip_source else None,
+            'replace': False if no_replace else True if replace else None,
+        },
     )
     path = build_bundle(options)
     print(f'Created {path} ({path.stat().st_size:,} bytes)')
     return 0
 
 
-@command('inspect', summary='Show the interpreter and dependency discovery results.')
+@command('inspect', summary='Explain included files, dependencies, and estimated bundle size.')
 def inspect(
-    source: Annotated[Path, Argument()],
+    source: Annotated[Optional[Path], Argument()] = None,
     *,
     python: Annotated[Optional[Path], Option()] = None,
-    run: Annotated[str, Option(help='Use the same launch command as the build.')] = '',
+    run: Annotated[Optional[str], Option(help='Use the same launch command as the build.')] = None,
+    output: Annotated[Optional[Path], Option('-o', help='Planned archive path.')] = None,
+    profile: Annotated[Optional[str], Option(help='Named build profile.')] = None,
+    config: Annotated[
+        Optional[Path], Option(help='Explicit pyproject.toml configuration file.')
+    ] = None,
+    requirement: Annotated[list[str], Option()] = EMPTY_OPTIONS,
+    requirements: Annotated[list[Path], Option()] = EMPTY_OPTIONS,
+    extra: Annotated[list[str], Option()] = EMPTY_OPTIONS,
+    include: Annotated[list[str], Option()] = EMPTY_OPTIONS,
     exclude: Annotated[list[str], Option()] = EMPTY_OPTIONS,
+    find_links: Annotated[list[str], Option()] = EMPTY_OPTIONS,
+    no_index: Annotated[bool, Flag()] = False,
+    use_index: Annotated[bool, Flag()] = False,
+    compile_mode: Annotated[
+        Optional[str], Option('--compile', choices=('none', 'app', 'all'))
+    ] = None,
+    strip_source: Annotated[bool, Flag()] = False,
+    keep_source: Annotated[bool, Flag()] = False,
+    resolve: Annotated[
+        bool,
+        Flag(help='Resolve/build wheels for exact dependency details and a fuller size estimate.'),
+    ] = False,
 ) -> int:
-    found = discover(
-        BuildOptions(source, tuple(split(run)), Path('unused.zip'), python, excludes=tuple(exclude))
+    if (no_index and use_index) or (strip_source and keep_source):
+        raise ValueError('Choose only one of each opposing flag pair')
+    options = resolve_options(
+        source,
+        profile=profile,
+        config=config,
+        **{
+            'python': python,
+            'run': run,
+            'output': output,
+            'requirement': requirement or None,
+            'requirements': requirements or None,
+            'extra': extra or None,
+            'include': include or None,
+            'exclude': exclude or None,
+            'find-links': find_links or None,
+            'compile': compile_mode,
+            'no-index': False if use_index else True if no_index else None,
+            'strip-source': False if keep_source else True if strip_source else None,
+        },
     )
-    print(
-        dumps(
-            {
-                'source': str(found.source),
-                'python': str(found.python),
-                'mode': found.mode,
-                'runtime': {
-                    key: value
-                    for key, value in found.runtime.items()
-                    if key not in ('stdlib', 'distributions', 'versions', 'origins', 'commands')
-                },
-                'inferred_requirements': found.requirements,
-                'requirement_files': [str(path) for path in found.requirement_files],
-                'unresolved_imports': found.unresolved,
-                'application_files': [
-                    path.relative_to(
-                        found.source if found.source.is_dir() else found.source.parent
-                    ).as_posix()
-                    for path in found.application_files
-                ],
-            },
-            indent=2,
-        )
-    )
-    return 1 if found.unresolved else 0
+    report = inspection_report(options, resolve=resolve)
+    print(dumps(report, indent=2))
+    return 1 if report['unresolved_imports'] else 0
 
 
 @command('verify', summary='Check an archive or extracted bundle without running the application.')

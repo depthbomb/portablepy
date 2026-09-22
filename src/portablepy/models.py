@@ -20,6 +20,9 @@ class BuildOptions:
     no_index: bool = False
     compile_mode: str = 'none'
     strip_source: bool = False
+    replace: bool = False
+    profile: Optional[str] = None
+    config: Optional[Path] = None
 
 
 @dataclass
@@ -32,3 +35,5 @@ class Discovery:
     requirement_files: list[Path] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     application_files: tuple[Path, ...] = ()
+    file_reasons: dict[Path, list[str]] = field(default_factory=dict)
+    import_reasons: dict[str, list[str]] = field(default_factory=dict)

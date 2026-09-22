@@ -11,10 +11,11 @@ from portablepy.discovery import discover
 from zipfile import ZipFile, ZIP_DEFLATED
 from portablepy.models import BuildOptions
 from portablepy.bytecode import compile_tree
+from portablepy.publishing import publish_archive
 from portablepy.files import copy_sources, include_data
-from portablepy.output import default_output, validate_output
-from portablepy.wheels import collect_wheels, repack_bytecode, write_requirements
+from portablepy.output import default_output, output_excludes, validate_output
 from portablepy.launcher import MANIFEST, file_hash, contents_hash, SCHEMA_VERSION
+from portablepy.wheels import collect_wheels, repack_bytecode, wheel_inventory, write_requirements
 
 RUNTIME_FIELDS = (
     'implementation',
@@ -26,7 +27,6 @@ RUNTIME_FIELDS = (
     'cache_tag',
     'magic',
 )
-COPY_BUFFER_SIZE = 1024 * 1024
 INSTRUCTIONS = """Portable Python application
 
 Extract this entire folder somewhere writable. Python itself is not included.
@@ -37,11 +37,13 @@ The first launch installs the bundled wheels into a private .venv without
 network access. Use the matching CPython version and platform in bundle.json.
 Your Python installation needs the standard venv and ensurepip modules.
 
-Writable files live in data/. Keep those files when updating the bundle.
+Writable files live in data/. Defaults ship in seeds/ and are copied only when
+missing. Extract updates into the same folder to keep your data/.
 Moving the folder or changing the bundle rebuilds only the private environment.
 The application directory is named with a SHA-256 hash of its files and paths.
 The launcher finds it automatically; its name is recorded in bundle.json.
 
+python run.py --portable-info    Show bundle metadata without setup
 python run.py --portable-setup   Set up without starting the application
 python run.py --portable-verify  Verify immutable files without starting it
 
@@ -70,13 +72,13 @@ def build_bundle(options: BuildOptions) -> Path:
     if options.strip_source and options.compile_mode == 'none':
         raise ValueError('--strip-source requires --compile app or --compile all')
     python_command = _python_command(options.command)
-    output = options.output.expanduser().resolve() if options.output is not None else None
+    output = options.output.expanduser().absolute() if options.output is not None else None
     if output is not None:
-        validate_output(output)
+        validate_output(output, replace=options.replace)
     discovery = discover(options)
     if output is None:
         output = default_output(discovery, options.command)
-        validate_output(output)
+        validate_output(output, replace=options.replace)
     if discovery.unresolved:
         raise ValueError(
             'Unresolved or ambiguous imports: '
@@ -95,7 +97,11 @@ def build_bundle(options: BuildOptions) -> Path:
         (bundle / 'data').mkdir()
         source_copy = work / 'source'
         if discovery.mode == 'project':
-            copy_sources(discovery.source, source_copy, options.excludes)
+            copy_sources(
+                discovery.source,
+                source_copy,
+                (*options.excludes, *output_excludes(discovery.source, output)),
+            )
         else:
             source_copy.mkdir()
         copy_sources(discovery.source, app, paths=discovery.application_files)
@@ -123,8 +129,7 @@ def build_bundle(options: BuildOptions) -> Path:
         app.rename(renamed)
         count = write_requirements(wheels, bundle / 'requirements.txt')
         base = discovery.source if discovery.source.is_dir() else discovery.source.parent
-        for specification in options.includes:
-            include_data(specification, base, bundle)
+        seeds = include_data(options.includes, base, bundle)
         (bundle / 'run.py').write_bytes(files('portablepy').joinpath('launcher.py').read_bytes())
         (bundle / 'README.txt').write_text(INSTRUCTIONS, encoding='utf-8')
         checksums = {
@@ -143,7 +148,11 @@ def build_bundle(options: BuildOptions) -> Path:
             'compile': options.compile_mode,
             'strip_source': options.strip_source,
             'files': checksums,
+            'seed_files': seeds,
+            'dependencies': wheel_inventory(wheels),
+            'profile': options.profile,
         }
+        manifest['build_id'] = contents_hash(manifest)
         (bundle / MANIFEST).write_text(dumps(manifest, indent=2) + '\n', encoding='utf-8')
         (bundle / f'{MANIFEST}.sha256').write_text(
             file_hash(bundle / MANIFEST) + '\n', encoding='utf-8'
@@ -162,11 +171,5 @@ def build_bundle(options: BuildOptions) -> Path:
             with open_tar(staged, 'w:gz') as archive:
                 for relative in sorted(members):
                     archive.add(bundle / relative, arcname=f'{name}/{relative}', recursive=False)
-        # Exclusive creation avoids overwriting an existing archive after a long build.
-        with output.open('xb') as stream, staged.open('rb') as source:
-            for block in iter(lambda: source.read(COPY_BUFFER_SIZE), b''):
-                stream.write(block)
-        output.with_name(output.name + '.sha256').write_text(
-            f'{file_hash(output)}  {output.name}\n', encoding='utf-8'
-        )
+        publish_archive(staged, output, replace=options.replace)
     return output

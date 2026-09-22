@@ -6,7 +6,12 @@ from ast import walk, parse, Import, ImportFrom
 from portablepy.files import selected_files, DEFAULT_EXCLUDES
 
 
-def trace_sources(source: Path, seeds=None, excludes=(), ignored=()):
+def trace_sources(
+    source: Path, seeds=None, excludes=(), ignored=(), *, file_reasons=None, import_reasons=None
+):
+    file_reasons = {} if file_reasons is None else file_reasons
+    import_reasons = {} if import_reasons is None else import_reasons
+    reason = 'Selected source'
     base = source if source.is_dir() else source.parent
     seeds = tuple(seeds) if seeds is not None else (source,)
     roots = tuple(
@@ -35,8 +40,14 @@ def trace_sources(source: Path, seeds=None, excludes=(), ignored=()):
                 return relative.with_suffix('').parts if relative.parts else ()
         return ()
 
-    def add_file(path):
-        if path in included or not allowed(path):
+    def add_file(path, explanation=None):
+        if not allowed(path):
+            return
+        reasons = file_reasons.setdefault(path, [])
+        explanation = explanation or reason
+        if explanation not in reasons:
+            reasons.append(explanation)
+        if path in included:
             return
         if path.is_symlink() or not path.resolve().is_relative_to(base.resolve()):
             raise ValueError(f'Application file must stay inside its source directory: {path}')
@@ -50,13 +61,16 @@ def trace_sources(source: Path, seeds=None, excludes=(), ignored=()):
                 break
             initializer = parent / '__init__.py'
             if initializer.is_file():
-                add_file(initializer)
+                add_file(
+                    initializer,
+                    f'Parent package initializer for {path.relative_to(base).as_posix()}',
+                )
 
     def add_resources(folder):
         # Scripts can read adjacent data files without naming them in an import.
         for path in folder.iterdir():
             if path.is_file() and path.suffix not in ('.py', '.pyc', '.pyo'):
-                add_file(path)
+                add_file(path, 'Resource beside the entry script')
 
     def add(path, whole=True):
         parts = module_parts(path)
@@ -97,6 +111,7 @@ def trace_sources(source: Path, seeds=None, excludes=(), ignored=()):
         return False
 
     for seed in seeds:
+        reason = f'Entry point source: {seed.relative_to(base).as_posix()}'
         add(seed)
         if seed.is_file():
             add_resources(seed.parent)
@@ -107,10 +122,14 @@ def trace_sources(source: Path, seeds=None, excludes=(), ignored=()):
         except SyntaxError as error:
             raise ValueError(f'Cannot inspect {current}: {error}') from error
         for node in walk(tree):
+            if isinstance(node, (Import, ImportFrom)):
+                reason = f'Import in {current.relative_to(base).as_posix()}:{node.lineno}'
             if isinstance(node, Import):
                 for alias in node.names:
                     if not resolve(alias.name):
-                        imports.add(alias.name.split('.')[0])
+                        external_name = alias.name.split('.')[0]
+                        imports.add(external_name)
+                        import_reasons.setdefault(external_name, []).append(reason)
             elif isinstance(node, ImportFrom):
                 imported_module = node.module or ''
                 if node.level:
@@ -126,5 +145,7 @@ def trace_sources(source: Path, seeds=None, excludes=(), ignored=()):
                         if alias.name != '*':
                             resolve(imported_module + '.' + alias.name)
                 elif imported_module:
-                    imports.add(imported_module.split('.')[0])
+                    external_name = imported_module.split('.')[0]
+                    imports.add(external_name)
+                    import_reasons.setdefault(external_name, []).append(reason)
     return tuple(sorted(included)), imports
