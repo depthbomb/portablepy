@@ -109,7 +109,9 @@ sh ./python-setup.sh && ./run.command
 
 Unix setup needs `curl`, `tar`, and either `sha256sum` or `shasum`, along with standard shell utilities. It does not require a compiler.
 
-The archive contains no `run.cmd`, `run.command`, or `run.sh`. Setup creates the appropriate launch script after finding or downloading a suitable Python. Use that script for later launches and append application arguments normally. It selects the runtime each time and handles `run.py` or `run.pyc` automatically. If an existing script wasn't created by portablepy, setup leaves it alone.
+Setup creates the appropriate launch script after finding or downloading a suitable Python. Use that script for later launches and append application arguments normally. It handles `run.py` or `run.pyc` automatically. If an existing script wasn't created by portablepy, setup leaves it alone.
+
+The bundle remembers its selected Python in `.portablepy-python`. Later launches reuse that selection without searching installed versions again. Updating the bundle or changing the interpreter invalidates the marker, so the launcher can select a suitable runtime again.
 
 When `run.py` starts under an incompatible Python that can execute the launcher, it calls the setup helper automatically, creates the convenience script, and restarts with the selected runtime. A compatible installed Python launches directly without creating an extra script.
 
