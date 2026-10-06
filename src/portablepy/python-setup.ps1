@@ -10,7 +10,7 @@ function Test-Python([string] $Candidate) {
     $Probe = @'
 import sys, struct, platform, json, sysconfig, venv, ensurepip
 from importlib.util import MAGIC_NUMBER
-print(json.dumps(dict(implementation=sys.implementation.name, version=list(sys.version_info[:2]), full_version=list(sys.version_info[:3]), platform=sys.platform, machine=platform.machine().lower(), bits=struct.calcsize('P')*8, free_threaded=bool(sysconfig.get_config_var('Py_GIL_DISABLED')), cache_tag=sys.implementation.cache_tag, magic=MAGIC_NUMBER.hex(), release_level=sys.version_info.releaselevel)))
+print(json.dumps(dict(implementation=sys.implementation.name, version=list(sys.version_info[:2]), full_version=list(sys.version_info[:3]), platform=sys.platform, machine=platform.machine().lower(), bits=struct.calcsize('P')*8, free_threaded=bool(sysconfig.get_config_var('Py_GIL_DISABLED')), cache_tag=sys.implementation.cache_tag, magic=MAGIC_NUMBER.hex(), release_level=sys.version_info.releaselevel, base_executable=sys._base_executable)))
 '@
     try {
         $Output = & $Candidate -I -c $Probe 2>$null
@@ -27,11 +27,65 @@ print(json.dumps(dict(implementation=sys.implementation.name, version=list(sys.v
                 return $false
             }
         }
+        $script:BasePython = $Actual.base_executable
         return $true
     }
     catch {
         return $false
     }
+}
+
+function Get-CachedPython {
+    try {
+        $Lines = [IO.File]::ReadAllLines((Join-Path $BundleRoot '.portablepy-python'))
+        if ($Lines.Count -ne 2) {
+            return
+        }
+        $Saved = $Lines[1] | ConvertFrom-Json
+        if ($Saved.manifest -cne $ExpectedHash -or -not $Saved.files.PSObject.Properties[$Lines[0]]) {
+            return
+        }
+        foreach ($Property in $Saved.files.PSObject.Properties) {
+            if ($null -eq $Property.Value) {
+                if (Test-Path -LiteralPath $Property.Name) {
+                    return
+                }
+                continue
+            }
+            $Item = Get-Item -LiteralPath $Property.Name -ErrorAction Stop
+            if ($Item.Length -ne $Property.Value[0] -or ($Item.LastWriteTimeUtc.Ticks - 621355968000000000) -ne $Property.Value[1]) {
+                return
+            }
+        }
+        if (Test-Path -LiteralPath $Lines[0] -PathType Leaf) {
+            return $Lines[0]
+        }
+    }
+    catch {
+        # Missing or stale selections use normal runtime discovery.
+    }
+}
+
+function Save-Python([string] $Candidate) {
+    $Paths = @($Candidate, $BasePython)
+    $Paths += Get-ChildItem -LiteralPath ([IO.Path]::GetDirectoryName($BasePython)) -Filter 'python*.dll' -File | ForEach-Object { $_.FullName }
+    $Parent = [IO.Path]::GetDirectoryName($Candidate)
+    foreach ($Directory in @($Parent, [IO.Path]::GetDirectoryName($Parent))) {
+        $Paths += Join-Path $Directory 'pyvenv.cfg'
+    }
+    $Fingerprints = @{}
+    foreach ($Path in $Paths) {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            $Fingerprints[$Path] = $null
+            continue
+        }
+        $Item = Get-Item -LiteralPath $Path
+        $Fingerprints[$Path] = @($Item.Length, ($Item.LastWriteTimeUtc.Ticks - 621355968000000000))
+    }
+    $Saved = @{ manifest = $ExpectedHash; files = $Fingerprints } | ConvertTo-Json -Depth 4 -Compress
+    $MarkerPath = Join-Path $BundleRoot '.portablepy-python'
+    Assert-LocalPath $MarkerPath
+    [IO.File]::WriteAllText($MarkerPath, $Candidate + "`n" + $Saved + "`n", [Text.UTF8Encoding]::new($false))
 }
 
 function Assert-LocalPath([string] $Path) {
@@ -89,40 +143,54 @@ try {
         throw 'Bundle manifest checksum failed'
     }
     $Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($env:PORTABLEPY_REFRESH_PYTHON -ne '1') {
+        $Selected = Get-CachedPython
+        if ($Selected) {
+            Write-LaunchScript
+            Write-Output $Selected
+            exit 0
+        }
+    }
     $Download = $Manifest.python_download
     $DownloadUri = [Uri]$Download.url
     if ($DownloadUri.Scheme -ne 'https' -or $DownloadUri.Authority -ne 'www.python.org' -or -not $DownloadUri.AbsolutePath.StartsWith('/ftp/python/') -or $DownloadUri.Query -or $DownloadUri.Fragment -or $Download.sha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'Invalid official Python download information'
     }
 
-    $Candidates = [Collections.Generic.List[string]]::new()
-    $PythonLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+    $Candidates = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $PythonLauncher = Get-Command py.exe -CommandType Application -ErrorAction SilentlyContinue
     if ($PythonLauncher) {
+        $Installed = @()
         try {
             $Installed = & $PythonLauncher.Source -0p 2>$null
-            foreach ($Line in $Installed) {
-                if ($Line -match '^\s*-\S+\s+\*?\s*(.+?\.exe)\s*$') {
-                    $Candidates.Add($Matches[1])
-                }
-            }
         }
         catch {
             # PATH candidates are still available when the launcher cannot list Python.
+        }
+        foreach ($Line in $Installed) {
+            if ($Line -match '^\s*-\S+\s+\*?\s*(.+?\.exe)\s*$') {
+                $Candidate = $Matches[1]
+                if ($Candidates.Add($Candidate) -and (Test-Python $Candidate)) {
+                    Save-Python $Candidate
+                    Write-LaunchScript
+                    Write-Output $Candidate
+                    exit 0
+                }
+            }
         }
     }
     $Series = $Manifest.runtime.version -join '.'
     foreach ($Name in @("python$Series.exe", 'python3.exe', 'python.exe')) {
         foreach ($Command in @(Get-Command $Name -CommandType Application -All -ErrorAction SilentlyContinue)) {
             if ($Command.Source -notlike '*\Microsoft\WindowsApps\*') {
-                $Candidates.Add($Command.Source)
+                $Candidate = $Command.Source
+                if ($Candidates.Add($Candidate) -and (Test-Python $Candidate)) {
+                    Save-Python $Candidate
+                    Write-LaunchScript
+                    Write-Output $Candidate
+                    exit 0
+                }
             }
-        }
-    }
-    foreach ($Candidate in ($Candidates | Select-Object -Unique)) {
-        if (Test-Python $Candidate) {
-            Write-LaunchScript
-            Write-Output $Candidate
-            exit 0
         }
     }
 
@@ -160,6 +228,7 @@ try {
             }
             $CachedPython = Join-Path $Cached.FullName 'python.exe'
             if ($ValidMarker -and (Test-Python $CachedPython)) {
+                Save-Python $CachedPython
                 Write-LaunchScript
                 Write-Output $CachedPython
                 exit 0
@@ -235,6 +304,8 @@ try {
         $Lock.Dispose()
         Remove-Item -LiteralPath $LockPath -Force
     }
+    $BasePython = $RuntimePython
+    Save-Python $RuntimePython
     Write-LaunchScript
     Write-Output $RuntimePython
 }

@@ -7,7 +7,7 @@ from pytest import mark, fixture
 from json import dumps, loads
 from tarfile import TarInfo, open as open_tar
 from sys import platform, executable, version_info
-from portablepy.launcher import file_hash
+from portablepy.launcher import file_hash, cached_python
 from portablepy.bootstrap import write_setup
 from portablepy.bytecode import compile_tree
 from portablepy.discovery import probe
@@ -121,7 +121,17 @@ def test_unix_download_creates_relocatable_script_and_shared_cache(tmp_path, uni
         assert selected.is_relative_to(cache)
         assert f'python-{download["version"]}-{download["architecture"]}' in str(selected)
         assert selected.is_file() and (root / script_name).is_file()
+        assert cached_python(root) == str(selected)
         assert not (root / '.python').exists()
+        helper = root / 'python-setup.sh'
+        original = helper.read_text(encoding='utf-8')
+        helper.write_text(
+            original.replace(
+                'import struct, platform, sysconfig, venv, ensurepip',
+                'raise RuntimeError("unexpected discovery")',
+            ),
+            encoding='utf-8',
+        )
         moved = tmp_path / (name + ' moved & punctuation!')
         root.rename(moved)
         arguments = ['two words', 'a&b', 'bang!']
@@ -130,6 +140,14 @@ def test_unix_download_creates_relocatable_script_and_shared_cache(tmp_path, uni
         )
         assert launched.returncode == 7, launched.stdout + launched.stderr
         assert loads(launched.stdout) == arguments
+        (moved / 'python-setup.sh').write_text(original, encoding='utf-8')
+        (moved / '.portablepy-python').write_text('stale')
+        recovered = run(
+            [str(moved / script_name), *arguments], capture_output=True, text=True, timeout=30
+        )
+        assert recovered.returncode == 7, recovered.stdout + recovered.stderr
+        assert loads(recovered.stdout) == arguments
+        assert cached_python(moved) == str(selected)
     assert (tmp_path / 'downloads.log').read_text().splitlines() == ['download']
     assert not list(cache.glob('*.lock'))
     assert not list(cache.glob('.portablepy-runtime-*'))

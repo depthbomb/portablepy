@@ -1,10 +1,10 @@
 """Standalone launcher copied into bundles; uses only the standard library."""
 
+import sys
 from os import environ
 from pathlib import Path
 from hashlib import sha256
 from struct import calcsize
-from venv import EnvBuilder
 from platform import machine
 from json import dumps, loads
 from shutil import rmtree, copyfileobj
@@ -19,6 +19,56 @@ MANIFEST = 'bundle.json'
 ENVIRONMENT = '.venv'
 OWNER = '.portablepy-owner'
 MARKER = '.portablepy-ready.json'
+PYTHON_MARKER = '.portablepy-python'
+
+
+def cached_python(root):
+    try:
+        candidate, encoded = (root / PYTHON_MARKER).read_text(encoding='utf-8').splitlines()
+        saved = loads(encoded)
+        if saved['manifest'] != file_hash(root / MANIFEST) or candidate not in saved['files']:
+            return None
+
+        for name, expected in saved['files'].items():
+            if expected is None:
+                if Path(name).exists():
+                    return None
+                continue
+            status = Path(name).stat()
+            if [status.st_size, status.st_mtime_ns // 100] != expected:
+                return None
+
+        return candidate if Path(candidate).is_file() else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):  # fmt: skip
+        return None
+
+
+def remember_python(root):
+    candidate = str(Path(executable).absolute())
+    base = Path(getattr(sys, '_base_executable', executable))
+    paths = {Path(candidate), base}
+    if platform == 'win32':
+        paths.update(base.parent.glob('python*.dll'))
+    else:
+        library = Path(get_config_var('LIBDIR') or '') / (get_config_var('LDLIBRARY') or '')
+        if library.is_file():
+            paths.add(library)
+    paths.update(
+        (Path(candidate).parent / 'pyvenv.cfg', Path(candidate).parent.parent / 'pyvenv.cfg')
+    )
+    saved = {'manifest': file_hash(root / MANIFEST), 'files': {}}
+    for path in paths:
+        if not path.exists():
+            saved['files'][str(path)] = None
+            continue
+        status = path.stat()
+        saved['files'][str(path)] = [status.st_size, status.st_mtime_ns // 100]
+
+    marker = root / PYTHON_MARKER
+    if marker.is_symlink() or marker.resolve() != root / PYTHON_MARKER:
+        raise ValueError('Python selection marker must not be a symlink or junction')
+
+    marker.write_text(candidate + '\n' + dumps(saved) + '\n', encoding='utf-8')
 
 
 def file_hash(path):
@@ -260,6 +310,8 @@ def prepare(root, manifest):
         environment.mkdir()
         (environment / OWNER).write_text('portablepy\n', encoding='utf-8')
         print('Setting up from bundled wheels...', flush=True)
+        from venv import EnvBuilder
+
         EnvBuilder(with_pip=True).create(environment)
         requirements = root / 'requirements.txt'
         if requirements.read_text(encoding='utf-8').strip():
@@ -350,8 +402,8 @@ def main(arguments=None):
     root = Path(__file__).resolve().parent
     try:
         manifest = load_manifest(root)
-        verify_files(root, manifest)
         if arguments == ['--portable-info']:
+            verify_files(root, manifest)
             print(dumps(bundle_info(manifest), indent=2))
             return 0
         try:
@@ -359,6 +411,12 @@ def main(arguments=None):
         except ValueError:
             if not manifest.get('python_download'):
                 raise
+            selected = cached_python(root)
+            if selected and Path(selected).resolve() != Path(executable).resolve():
+                return run([selected, '-I', str(Path(__file__).resolve()), *arguments]).returncode
+
+            helper = 'python-setup.ps1' if platform == 'win32' else 'python-setup.sh'
+            verify_files(root, {'files': {helper: manifest['files'][helper]}})
             setup_command = (
                 [
                     'powershell.exe',
@@ -376,6 +434,7 @@ def main(arguments=None):
                 setup_command,
                 capture_output=True,
                 text=True,
+                env=dict(environ, PORTABLEPY_REFRESH_PYTHON='1'),
             )
             if setup.stderr:
                 print(setup.stderr, end='', file=stderr)
@@ -385,10 +444,15 @@ def main(arguments=None):
             if not selected or Path(selected).resolve() == Path(executable).resolve():
                 raise ValueError('Could not select a compatible Python runtime') from None
             return run([selected, '-I', str(Path(__file__).resolve()), *arguments]).returncode
+        verify_files(root, manifest)
         if arguments == ['--portable-verify']:
             print('Bundle checksums passed (writable data is preserved).')
             return 0
         python = prepare(root, manifest)
+        if manifest.get('python_download') and cached_python(root) != str(
+            Path(executable).absolute()
+        ):
+            remember_python(root)
         if arguments == ['--portable-setup']:
             return 0
         command = application_command(root, manifest, python, arguments)

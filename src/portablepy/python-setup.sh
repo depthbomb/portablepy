@@ -31,13 +31,52 @@ file_hash() {
 test_python() {
     [ -x "$1" ] || return 1
     "$1" -I -c '
-import sys, struct, platform, sysconfig, json, venv, ensurepip
+import sys, json
 from pathlib import Path
+root = Path(sys.argv[3])
+marker = root / ".portablepy-python"
+candidate = str(Path(sys.argv[2]).absolute())
+manifest_hash = sys.argv[4]
+if sys.argv[5] == "cached":
+    try:
+        selected, encoded = marker.read_text(encoding="utf-8").splitlines()
+        saved = json.loads(encoded)
+        valid = selected == candidate and saved["manifest"] == manifest_hash and candidate in saved["files"]
+        for name, expected in saved["files"].items():
+            if expected is None:
+                valid = valid and not Path(name).exists()
+                continue
+            status = Path(name).stat()
+            valid = valid and [status.st_size, status.st_mtime_ns // 100] == expected
+        sys.exit(0 if valid else 1)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        sys.exit(1)
+
+import struct, platform, sysconfig, venv, ensurepip
 from importlib.util import MAGIC_NUMBER
 actual = dict(implementation=sys.implementation.name, version=list(sys.version_info[:2]), full_version=list(sys.version_info[:3]), platform=sys.platform, machine=platform.machine().lower(), bits=struct.calcsize("P")*8, free_threaded=bool(sysconfig.get_config_var("Py_GIL_DISABLED")), cache_tag=sys.implementation.cache_tag, magic=MAGIC_NUMBER.hex(), release_level=sys.version_info.releaselevel, libc="musl" if "musl" in (sysconfig.get_config_var("HOST_GNU_TYPE") or "") or list(Path("/lib").glob("ld-musl-*.so.1")) else "gnu")
 expected = json.loads(sys.argv[1])
-sys.exit(0 if actual["release_level"] == "final" and all(actual.get(key) == value for key, value in expected.items()) else 1)
-' "$expected" >/dev/null 2>&1
+if actual["release_level"] != "final" or any(actual.get(key) != value for key, value in expected.items()):
+    sys.exit(1)
+if sys.argv[5] == "check":
+    sys.exit(0)
+
+paths = {Path(candidate), Path(sys._base_executable)}
+library = Path(sysconfig.get_config_var("LIBDIR") or "") / (sysconfig.get_config_var("LDLIBRARY") or "")
+if library.is_file():
+    paths.add(library)
+paths.update((Path(candidate).parent / "pyvenv.cfg", Path(candidate).parent.parent / "pyvenv.cfg"))
+saved = {"manifest": manifest_hash, "files": {}}
+for path in paths:
+    if not path.exists():
+        saved["files"][str(path)] = None
+        continue
+    status = path.stat()
+    saved["files"][str(path)] = [status.st_size, status.st_mtime_ns // 100]
+if marker.is_symlink() or marker.resolve() != root / ".portablepy-python":
+    sys.exit(1)
+marker.write_text(candidate + "\n" + json.dumps(saved) + "\n", encoding="utf-8")
+' "$expected" "$1" "$bundle" "$manifest_hash" "${2:-save}" >/dev/null 2>&1
 }
 
 write_launcher() {
@@ -68,6 +107,13 @@ select_python() {
 [ "$(uname -s)" = "$target_system" ] || fail "This bundle requires $target_system."
 manifest_hash=$(cat "$bundle/bundle.json.sha256")
 [ "$(file_hash "$bundle/bundle.json")" = "$manifest_hash" ] || fail 'Bundle manifest checksum failed'
+
+if [ "${PORTABLEPY_REFRESH_PYTHON:-}" != 1 ] && [ -f "$bundle/.portablepy-python" ]; then
+    IFS= read -r selected < "$bundle/.portablepy-python" || selected=''
+    if test_python "$selected" cached; then
+        select_python "$selected"
+    fi
+fi
 
 search_path=${PATH:-/usr/bin:/bin}
 for name in "python$series" python3 python; do
@@ -154,11 +200,12 @@ done < "$work/members"
 staged="$work/runtime"
 mkdir "$staged"
 tar -xzf "$archive" --strip-components=1 --no-same-owner -C "$staged"
-test_python "$staged/bin/python$series" || fail 'Downloaded Python does not match this bundle runtime'
+test_python "$staged/bin/python$series" check || fail 'Downloaded Python does not match this bundle runtime'
 rm -rf -- "$staged/include" "$staged/share/man"
 rm -f -- "$staged/lib/libpython$series.a"
 printf '%s\n' "$download_hash" > "$staged/.portablepy-runtime.sha256"
 mkdir -p "$runtime_base"
 [ ! -L "$runtime_base" ] && [ ! -e "$runtime_root" ] && [ ! -L "$runtime_root" ] || fail 'Runtime destination changed during setup'
 mv "$staged" "$runtime_root"
+test_python "$runtime_python" || fail 'Installed Python does not match this bundle runtime'
 select_python "$runtime_python"

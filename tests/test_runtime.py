@@ -202,6 +202,18 @@ def test_windows_bootstrap_prefers_installed_python_and_preserves_arguments(
     assert setup.returncode == 0, setup.stdout + setup.stderr
     selected = Path(setup.stdout.strip())
     assert selected.is_file()
+    from portablepy.launcher import cached_python
+
+    assert cached_python(root) == str(selected)
+    helper = root / 'python-setup.ps1'
+    original = helper.read_text(encoding='utf-8')
+    helper.write_text(
+        original.replace('$Download = $Manifest.python_download', "throw 'unexpected discovery'"),
+        encoding='utf-8',
+    )
+    moved = tmp_path / 'moved bundle & punctuation!'
+    root.rename(moved)
+    root = moved
     script = root / 'run.cmd'
     assert script.is_file()
     quoted = ' '.join(f'"{value}"' for value in (str(script), *arguments))
@@ -210,6 +222,13 @@ def test_windows_bootstrap_prefers_installed_python_and_preserves_arguments(
     assert result.returncode == 0, result.stdout + result.stderr
     assert loads(result.stdout.strip()) == arguments
     assert not (root / '.python').exists()
+    # A stale selection must fall back to discovery and repair the marker.
+    (root / 'python-setup.ps1').write_text(original, encoding='utf-8')
+    (root / '.portablepy-python').write_text('stale')
+    recovered = run(f'"{shell}" /d /s /c "{quoted}"', capture_output=True, text=True, timeout=30)
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert loads(recovered.stdout.strip()) == arguments
+    assert cached_python(root) == str(selected)
 
 
 @mark.skipif(platform != 'win32', reason='Windows bootstrap')
