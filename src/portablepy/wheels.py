@@ -27,7 +27,10 @@ def wheel_metadata(path: Path):
             raise ValueError(f'Duplicate wheel entries: {path.name}')
         for name in names:
             portable_path(name.rstrip('/'))
-        metadata_files = [name for name in names if name.endswith('.dist-info/METADATA')]
+        # Vendored libraries can retain their own metadata inside the package.
+        metadata_files = [
+            name for name in names if name.count('/') == 1 and name.endswith('.dist-info/METADATA')
+        ]
         if len(metadata_files) != 1:
             raise ValueError(f'Expected one wheel metadata file: {path.name}')
         prefix = metadata_files[0].rsplit('/', 1)[0]
