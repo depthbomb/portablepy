@@ -21,7 +21,9 @@ def _slug(value: str):
     return sub(r'[^a-z0-9]+', '-', value.lower()).strip('-')
 
 
-def default_output(discovery: Discovery, command: tuple[str, ...]) -> Path:
+def default_output(
+    discovery: Discovery, command: tuple[str, ...], *, directory: Path | None = None
+) -> Path:
     source = discovery.source
     project_name = source.name if source.is_dir() else source.stem
     if discovery.mode == 'wheel':
@@ -43,7 +45,7 @@ def default_output(discovery: Discovery, command: tuple[str, ...]) -> Path:
         project_name = (
             target if target.startswith(project_name + '-') else project_name + '-' + target
         )
-    runtime = discovery.runtime
+    runtime = discovery.target_runtime or discovery.runtime
     platform = PLATFORM_NAMES.get(runtime['platform'], _slug(runtime['platform']))
     machine = runtime['machine'].lower()
     architecture = ARCHITECTURE_NAMES.get(machine, _slug(machine))
@@ -53,7 +55,9 @@ def default_output(discovery: Discovery, command: tuple[str, ...]) -> Path:
     if runtime.get('free_threaded', False):
         version += 't'
     extension = '.zip' if runtime['platform'] == 'win32' else '.tar.gz'
-    return Path.cwd() / f'{project_name}-auto-{platform}-{architecture}-py{version}{extension}'
+    return (directory or Path.cwd()) / (
+        f'{project_name}-auto-{platform}-{architecture}-py{version}{extension}'
+    )
 
 
 def validate_output(path: Path, *, replace=False):

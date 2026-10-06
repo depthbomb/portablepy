@@ -136,7 +136,7 @@ def collect_wheels(
         if options.extras:
             inputs[0] += '[' + ','.join(options.extras) + ']'
     elif options.extras:
-        raise ValueError('--extra requires a packaged project or wheel')
+        raise ValueError('extra requires a packaged project or wheel')
     for file in discovery.requirement_files:
         inputs.extend(['-r', str(file)])
     if not inputs:
@@ -146,11 +146,24 @@ def collect_wheels(
         '-m',
         'pip',
         '--isolated',
-        'wheel',
+        'download' if options.python_version else 'wheel',
         '--prefer-binary',
-        '--wheel-dir',
+        '--dest' if options.python_version else '--wheel-dir',
         str(destination),
     ]
+    if options.python_version:
+        series = ''.join(options.python_version.split('.')[:2])
+        command.extend(
+            [
+                '--python-version',
+                options.python_version,
+                '--implementation',
+                'cp',
+                '--abi',
+                'cp' + series,
+                '--only-binary=:all:',
+            ]
+        )
     if options.no_index:
         command.append('--no-index')
     for path in options.find_links:
@@ -162,6 +175,37 @@ def collect_wheels(
                 copied = Path(temporary) / str(index)
                 copy_sources(candidate, copied)
                 inputs[index] = str(copied)
+        if options.python_version:
+            for index, requirement in enumerate(inputs):
+                filename, separator, extras = requirement.partition('[')
+                candidate = Path(filename)
+                if not candidate.is_absolute() or not candidate.is_dir():
+                    continue
+                built = Path(temporary) / f'built-{index}'
+                build_command = [
+                    str(discovery.python),
+                    '-m',
+                    'pip',
+                    '--isolated',
+                    'wheel',
+                    '--no-deps',
+                    '--ignore-requires-python',
+                    '--wheel-dir',
+                    str(built),
+                ]
+                if options.no_index:
+                    build_command.append('--no-index')
+                for link in options.find_links:
+                    build_command.extend(['--find-links', link])
+                run(
+                    [*build_command, str(candidate)],
+                    stdout=stderr if log_to_stderr else None,
+                    check=True,
+                )
+                built_wheels = list(built.glob('*.whl'))
+                if len(built_wheels) != 1:
+                    raise ValueError(f'Expected one application wheel from {candidate}')
+                inputs[index] = str(built_wheels[0]) + ('[' + extras if separator else '')
         run(
             [*command, *inputs],
             stdout=stderr if log_to_stderr else None,

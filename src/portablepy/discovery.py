@@ -10,6 +10,7 @@ from portablepy.sources import trace_sources
 from portablepy.entrypoints import launch_target
 from portablepy.models import Discovery, BuildOptions
 from portablepy.output import output_paths, default_output
+from portablepy.runtime import resolve_runtime, recipient_runtime
 
 PROBE = """
 from sys import version_info, implementation, platform, stdlib_module_names
@@ -57,12 +58,15 @@ for distribution in distributions():
 print(dumps({
     'implementation': implementation.name,
     'version': list(version_info[:2]),
+    'full_version': list(version_info[:3]),
+    'release_level': version_info.releaselevel,
     'platform': platform,
     'machine': machine().lower(),
     'bits': calcsize('P') * 8,
     'free_threaded': bool(get_config_var('Py_GIL_DISABLED')),
     'cache_tag': implementation.cache_tag,
     'magic': MAGIC_NUMBER.hex(),
+    'libc': 'musl' if 'musl' in (get_config_var('HOST_GNU_TYPE') or '') or list(Path('/lib').glob('ld-musl-*.so.1')) else 'gnu',
     'stdlib': sorted(stdlib_module_names),
     'distributions': mapping,
     'versions': versions,
@@ -90,7 +94,7 @@ def probe(python: Path):
     result = run([str(python), '-I', '-c', PROBE], capture_output=True, text=True, check=True)
     data = loads(result.stdout)
     if data['implementation'] != 'cpython' or data['version'] < [3, 14]:
-        raise ValueError('Select CPython 3.14 or later with --python')
+        raise ValueError('Select CPython 3.14 or later with the python setting in portablepy.toml')
     return data
 
 
@@ -124,6 +128,12 @@ def discover(options: BuildOptions) -> Discovery:
         raise ValueError(f'Source does not exist: {source}')
     python = find_python(source, options.python)
     runtime = probe(python)
+    target = (
+        recipient_runtime(runtime, options.python_version, compiled=options.compile_mode != 'none')
+        if options.python_version
+        else None
+    )
+    download = resolve_runtime(options.python_version, runtime) if options.python_version else None
     files = [path.expanduser().resolve() for path in options.requirement_files]
     mode = 'script' if source.is_file() else 'directory'
     project = {}
@@ -204,8 +214,12 @@ def discover(options: BuildOptions) -> Discovery:
         application_files,
         file_reasons,
         import_reasons,
+        download,
+        target,
     )
-    output = options.output or default_output(result, options.command)
+    output = options.output or default_output(
+        result, options.command, directory=options.config.parent if options.config else None
+    )
     artifacts = set(output_paths(output))
     result.application_files = tuple(
         path for path in application_files if path.resolve() not in artifacts

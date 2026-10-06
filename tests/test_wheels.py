@@ -1,8 +1,11 @@
 from pathlib import Path
 from sys import executable
+from subprocess import CalledProcessError
 from zipfile import ZipFile
 from pytest import mark, raises
 from portablepy.discovery import probe
+from portablepy.models import Discovery, BuildOptions
+from portablepy.wheels import collect_wheels
 from portablepy.wheels import wheel_metadata, repack_bytecode
 
 
@@ -84,3 +87,22 @@ def test_multiple_top_level_metadata_directories_are_rejected(wheel_factory):
     )
     with raises(ValueError, match='Expected one wheel metadata'):
         wheel_metadata(wheel)
+
+
+@mark.parametrize('target,compatible', [('3.14.0', False), ('3.14.8', True)])
+def test_wheel_resolution_uses_recipient_python_requirement(
+    tmp_path, wheel_factory, target, compatible
+):
+    wheel = wheel_factory(
+        extra_files={
+            'demo_app-1.0.dist-info/METADATA': b'Metadata-Version: 2.4\nName: demo-app\nVersion: 1.0\nRequires-Python: >=3.14.7\n\n',
+        }
+    )
+    discovery = Discovery(wheel, Path(executable), probe(Path(executable)), 'wheel')
+    options = BuildOptions(wheel, ('demo-command',), python_version=target, no_index=True)
+    if compatible:
+        collect_wheels(discovery, options, tmp_path / 'wheels', tmp_path / 'unused')
+        assert list((tmp_path / 'wheels').glob('*.whl'))
+    else:
+        with raises(CalledProcessError):
+            collect_wheels(discovery, options, tmp_path / 'wheels', tmp_path / 'unused')

@@ -9,6 +9,7 @@ DEFAULT_EXCLUDES = (
     '.hg',
     '.svn',
     '.venv',
+    '.python',
     'venv',
     '.tox',
     '.nox',
@@ -27,6 +28,9 @@ DEFAULT_EXCLUDES = (
     '.env',
     '.env.*',
     '.portablepy-publish-*',
+    '.portablepy-runtime-*',
+    '.portablepy-runtime.lock',
+    '.portablepy-launcher-*',
 )
 
 
@@ -89,7 +93,7 @@ def data_files(specifications, base: Path):
     for specification in specifications:
         source_text, separator, destination = specification.partition('=')
         if not separator or not source_text:
-            raise ValueError('--include uses SOURCE=data/DESTINATION')
+            raise ValueError('include uses SOURCE=data/DESTINATION')
         relative = portable_path(destination)
         if len(relative.parts) < 2 or relative.parts[0] != 'data':
             raise ValueError('Included writable files must have a destination under data/')

@@ -11,36 +11,19 @@ from portablepy.discovery import discover
 from zipfile import ZipFile, ZIP_DEFLATED
 from portablepy.models import BuildOptions
 from portablepy.bytecode import compile_tree
-from portablepy.shortcuts import write_shortcut
+from portablepy.runtime import recipient_runtime
 from portablepy.publishing import publish_archive
 from portablepy.files import copy_sources, include_data
+from portablepy.bootstrap import write_setup, setup_instructions
 from portablepy.output import default_output, output_excludes, validate_output
 from portablepy.launcher import MANIFEST, file_hash, contents_hash, SCHEMA_VERSION
 from portablepy.wheels import collect_wheels, repack_bytecode, wheel_inventory, write_requirements
 
-RUNTIME_FIELDS = (
-    'implementation',
-    'version',
-    'platform',
-    'machine',
-    'bits',
-    'free_threaded',
-    'cache_tag',
-    'magic',
-)
 INSTRUCTIONS = """Portable Python application
 
 Extract this entire folder somewhere writable. Python itself is not included.
 Run: python run.py
 Extra arguments are forwarded to the application: python run.py --help
-
-You can also use the included console launcher: run.cmd on Windows,
-run.command on macOS, or run.sh on Linux. Double-click it to start; Linux
-file managers may require enabling executable scripts or choosing Run.
-If extraction removed executable permissions, run chmod +x run.command
-or chmod +x run.sh. Arguments supplied in a terminal are forwarded.
-Failed launches wait for a key/Enter when started without arguments
-(on Unix, only with an interactive terminal).
 
 The first launch installs the bundled wheels into a private .venv without
 network access. Use the matching CPython version and platform in bundle.json.
@@ -64,7 +47,7 @@ are retained in their wheels. Bytecode is version-specific, not encryption.
 
 def _python_command(command):
     if not command:
-        raise ValueError('Provide the application command with --run')
+        raise ValueError("Set run in portablepy.toml, for example: run = 'python main.py'")
     first = command[0]
     if any(argument in ('&&', '||', '|', '>', '<', ';') for argument in command):
         raise ValueError('Commands are argument lists, not shell scripts')
@@ -77,22 +60,27 @@ def _python_command(command):
 
 def build_bundle(options: BuildOptions) -> Path:
     if options.compile_mode not in ('none', 'app', 'all'):
-        raise ValueError('--compile must be none, app, or all')
+        raise ValueError('compile must be none, app, or all')
     if options.strip_source and options.compile_mode == 'none':
-        raise ValueError('--strip-source requires --compile app or --compile all')
+        raise ValueError("strip-source = true requires compile = 'app' or 'all'")
     python_command = _python_command(options.command)
     output = options.output.expanduser().absolute() if options.output is not None else None
     if output is not None:
         validate_output(output, replace=options.replace)
     discovery = discover(options)
+    target_runtime = recipient_runtime(
+        discovery.runtime, options.python_version, compiled=options.compile_mode != 'none'
+    )
     if output is None:
-        output = default_output(discovery, options.command)
+        output = default_output(
+            discovery, options.command, directory=options.config.parent if options.config else None
+        )
         validate_output(output, replace=options.replace)
     if discovery.unresolved:
         raise ValueError(
             'Unresolved or ambiguous imports: '
             + ', '.join(discovery.unresolved)
-            + '. Install them in the selected environment, or declare dependencies with --requirement/--requirements.'
+            + '. Install them in the selected environment, or set requirement/requirements in portablepy.toml.'
         )
     print(f'Using {discovery.python}; dependency source: {discovery.mode}', flush=True)
     name = output.name.removesuffix('.tar.gz').removesuffix('.zip')
@@ -120,9 +108,7 @@ def build_bundle(options: BuildOptions) -> Path:
             compile_tree(app, discovery.python, strip=options.strip_source)
         if options.compile_mode == 'all':
             for wheel in sorted(wheels.glob('*.whl')):
-                repack_bytecode(
-                    wheel, discovery.python, discovery.runtime, strip=options.strip_source
-                )
+                repack_bytecode(wheel, discovery.python, target_runtime, strip=options.strip_source)
         app_directory = contents_hash(
             {
                 path.relative_to(app).as_posix(): file_hash(path)
@@ -145,9 +131,15 @@ def build_bundle(options: BuildOptions) -> Path:
         launcher = 'run.pyc' if compiled_launcher else 'run.py'
         if compiled_launcher:
             compile_tree(bundle / 'run.py', discovery.python, strip=options.strip_source)
-        shortcut = write_shortcut(bundle, discovery.runtime, compiled=compiled_launcher)
+        instructions = INSTRUCTIONS.replace('run.py', launcher)
+        if discovery.python_download:
+            write_setup(bundle, target_runtime, discovery.python_download, launcher)
+            instructions = (
+                setup_instructions(target_runtime, options.python_version or '') + instructions
+            )
         (bundle / 'README.txt').write_text(
-            INSTRUCTIONS.replace('run.py', launcher), encoding='utf-8'
+            instructions,
+            encoding='utf-8',
         )
         checksums = {
             path.relative_to(bundle).as_posix(): file_hash(path)
@@ -158,7 +150,7 @@ def build_bundle(options: BuildOptions) -> Path:
             'schema': SCHEMA_VERSION,
             'name': name,
             'app_directory': app_directory,
-            'runtime': {key: discovery.runtime[key] for key in RUNTIME_FIELDS},
+            'runtime': target_runtime,
             'command': list(options.command),
             'python_command': python_command,
             'prefer_installed': discovery.mode in ('project', 'wheel'),
@@ -169,13 +161,29 @@ def build_bundle(options: BuildOptions) -> Path:
             'dependencies': wheel_inventory(wheels),
             'profile': options.profile,
         }
+        if options.python_version:
+            manifest['python_version'] = options.python_version
+        if discovery.python_download:
+            manifest['python_download'] = discovery.python_download
         manifest['build_id'] = contents_hash(manifest)
         (bundle / MANIFEST).write_text(dumps(manifest) + '\n', encoding='utf-8')
         (bundle / f'{MANIFEST}.sha256').write_text(
             file_hash(bundle / MANIFEST) + '\n', encoding='utf-8'
         )
-        print(f'Validating {count} wheels in an offline environment...', flush=True)
-        run([str(discovery.python), '-I', str(bundle / launcher), '--portable-setup'], check=True)
+        can_validate = all(
+            discovery.runtime.get(key) == value for key, value in target_runtime.items()
+        )
+        if can_validate:
+            print(f'Validating {count} wheels in an offline environment...', flush=True)
+            run(
+                [str(discovery.python), '-I', str(bundle / launcher), '--portable-setup'],
+                check=True,
+            )
+        else:
+            print(
+                'Target wheels checked; offline installation will be validated on the recipient.',
+                flush=True,
+            )
         members = [*checksums, MANIFEST, f'{MANIFEST}.sha256']
         output.parent.mkdir(parents=True, exist_ok=True)
         # Publish only after validation; exclude the generated environment entirely.
@@ -184,16 +192,10 @@ def build_bundle(options: BuildOptions) -> Path:
             with ZipFile(staged, 'w', compression=ZIP_DEFLATED) as archive:
                 for relative in sorted(members):
                     archive.write(bundle / relative, f'{name}/{relative}')
-                    if relative == shortcut and shortcut != 'run.cmd':
-                        entry = archive.getinfo(f'{name}/{relative}')
-                        entry.create_system = 3
-                        entry.external_attr = 0o100755 << 16
         else:
             with open_tar(staged, 'w:gz') as archive:
                 for relative in sorted(members):
                     member = archive.gettarinfo(bundle / relative, arcname=f'{name}/{relative}')
-                    if relative == shortcut and shortcut != 'run.cmd':
-                        member.mode = 0o755
                     with (bundle / relative).open('rb') as stream:
                         archive.addfile(member, stream)
         publish_archive(staged, output, replace=options.replace)

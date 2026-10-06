@@ -23,6 +23,8 @@ class BuildOptions:
     replace: bool = False
     profile: Optional[str] = None
     config: Optional[Path] = None
+    resolve: bool = False
+    python_version: str | None = None
 
 
 @dataclass
@@ -37,3 +39,5 @@ class Discovery:
     application_files: tuple[Path, ...] = ()
     file_reasons: dict[Path, list[str]] = field(default_factory=dict)
     import_reasons: dict[str, list[str]] = field(default_factory=dict)
+    python_download: dict | None = None
+    target_runtime: dict | None = None

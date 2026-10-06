@@ -1,5 +1,5 @@
 [build-system]
-requires = ['setuptools>=77']
+requires = ['setuptools>=84.0.0']
 build-backend = 'setuptools.build_meta'
 
 [project]
@@ -37,6 +37,9 @@ dev = ['build>=1.2', 'pytest>=8', 'pytest-cov>=6', 'ruff>=0.12', 'mypy>=1.18', '
 [tool.setuptools.packages.find]
 where = ['src']
 
+[tool.setuptools.package-data]
+portablepy = ['*.ps1', '*.sh']
+
 [tool.pytest.ini_options]
 testpaths = ['tests']
 addopts = '-ra --strict-config --strict-markers'
@@ -50,6 +53,7 @@ select = ['E4', 'E7', 'E9', 'F', 'B']
 
 [tool.ruff.format]
 quote-style = 'single'
+exclude = ['src/portablepy/generated.py']
 
 [tool.mypy]
 python_version = '3.14'

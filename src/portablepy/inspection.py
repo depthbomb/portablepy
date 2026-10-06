@@ -6,6 +6,7 @@ from zlib import compressobj
 from tempfile import TemporaryDirectory
 from portablepy.discovery import discover
 from portablepy.bytecode import compile_tree
+from portablepy.runtime import recipient_runtime
 from portablepy.files import data_files, copy_sources
 from portablepy.launcher import file_hash, COPY_BUFFER_SIZE
 from portablepy.output import default_output, output_excludes
@@ -55,7 +56,9 @@ def _dependency_inputs(discovery, options):
 def inspection_report(options, *, resolve=False):
     discovery = discover(options)
     base = discovery.source if discovery.source.is_dir() else discovery.source.parent
-    output = options.output or default_output(discovery, options.command)
+    output = options.output or default_output(
+        discovery, options.command, directory=options.config.parent if options.config else None
+    )
     seeds = data_files(options.includes, base)
     application = [
         {
@@ -79,13 +82,13 @@ def inspection_report(options, *, resolve=False):
         'source': str(discovery.source),
         'python': str(discovery.python),
         'mode': discovery.mode,
-        'runtime': {
-            key: value
-            for key, value in discovery.runtime.items()
-            if key not in ('stdlib', 'distributions', 'versions', 'origins', 'commands')
-        },
+        'runtime': recipient_runtime(
+            discovery.runtime, options.python_version, compiled=options.compile_mode != 'none'
+        ),
         'config': str(options.config) if options.config else None,
         'profile': options.profile,
+        'python_version': options.python_version,
+        'python_download': discovery.python_download,
         'command': list(options.command),
         'output': str(output),
         'inferred_requirements': discovery.requirements,
@@ -101,13 +104,13 @@ def inspection_report(options, *, resolve=False):
             'payload_bytes': sum(path.stat().st_size for path in paths),
             'estimated_compressed_payload_bytes': sum(_compressed_size(path) for path in paths),
             'includes_wheels': False,
-            'note': 'Payload estimate excludes archive headers, launcher, manifest, and runtime environment. Use --resolve to include resolved wheels and bytecode changes.',
+            'note': 'Payload estimate excludes archive headers, launcher, manifest, and runtime environment. Set resolve = true in portablepy.toml to include resolved wheels and bytecode changes.',
         },
     }
     if not resolve or discovery.unresolved:
         return report
     if options.strip_source and options.compile_mode == 'none':
-        raise ValueError('--strip-source requires --compile app or --compile all')
+        raise ValueError("strip-source = true requires compile = 'app' or 'all'")
     with TemporaryDirectory(prefix='portablepy-inspect-') as temporary:
         work = Path(temporary)
         source_copy = work / 'source'
@@ -157,7 +160,7 @@ def inspection_report(options, *, resolve=False):
             origins = {_name(record['name']): record for record in inventory}
             for wheel in sorted(wheels.glob('*.whl')):
                 repack_bytecode(
-                    wheel, discovery.python, discovery.runtime, strip=options.strip_source
+                    wheel, discovery.python, report['runtime'], strip=options.strip_source
                 )
             inventory = wheel_inventory(wheels)
             for record in inventory:

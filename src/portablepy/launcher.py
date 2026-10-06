@@ -11,7 +11,7 @@ from shutil import rmtree, copyfileobj
 from importlib.util import MAGIC_NUMBER
 from sysconfig import get_path, get_config_var
 from subprocess import run, Popen, CalledProcessError
-from sys import argv, platform, executable, version_info, implementation
+from sys import argv, stderr, platform, executable, version_info, implementation
 
 COPY_BUFFER_SIZE = 1024 * 1024
 SCHEMA_VERSION = 1
@@ -141,9 +141,16 @@ def check_runtime(expected):
         'free_threaded': bool(get_config_var('Py_GIL_DISABLED')),
         'cache_tag': implementation.cache_tag,
         'magic': MAGIC_NUMBER.hex(),
+        'release_level': version_info.releaselevel,
+        'libc': 'musl'
+        if 'musl' in (get_config_var('HOST_GNU_TYPE') or '')
+        or list(Path('/lib').glob('ld-musl-*.so.1'))
+        else 'gnu',
     }
-    if actual != expected:
-        version = '.'.join(map(str, expected['version']))
+    if 'full_version' in expected:
+        actual['full_version'] = list(version_info[:3])
+    if any(actual.get(key) != value for key, value in expected.items()):
+        version = '.'.join(map(str, expected.get('full_version', expected['version'])))
         raise ValueError(
             f'This bundle needs CPython {version} on {expected["platform"]} {expected["machine"]} ({expected["bits"]}-bit, free-threaded={expected["free_threaded"]})'
         )
@@ -203,6 +210,8 @@ def bundle_info(manifest):
         'compile': manifest.get('compile', 'none'),
         'strip_source': manifest['strip_source'],
         'profile': manifest.get('profile'),
+        'python_version': manifest.get('python_version'),
+        'python_download': manifest.get('python_download'),
         'dependencies': manifest.get('dependencies', []),
         'seed_files': manifest.get('seed_files', {}),
     }
@@ -345,7 +354,37 @@ def main(arguments=None):
         if arguments == ['--portable-info']:
             print(dumps(bundle_info(manifest), indent=2))
             return 0
-        check_runtime(manifest['runtime'])
+        try:
+            check_runtime(manifest['runtime'])
+        except ValueError:
+            if not manifest.get('python_download'):
+                raise
+            setup_command = (
+                [
+                    'powershell.exe',
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-File',
+                    str(root / 'python-setup.ps1'),
+                ]
+                if platform == 'win32'
+                else ['sh', str(root / 'python-setup.sh')]
+            )
+            setup = run(
+                setup_command,
+                capture_output=True,
+                text=True,
+            )
+            if setup.stderr:
+                print(setup.stderr, end='', file=stderr)
+            if setup.returncode:
+                return setup.returncode
+            selected = setup.stdout.strip()
+            if not selected or Path(selected).resolve() == Path(executable).resolve():
+                raise ValueError('Could not select a compatible Python runtime') from None
+            return run([selected, '-I', str(Path(__file__).resolve()), *arguments]).returncode
         if arguments == ['--portable-verify']:
             print('Bundle checksums passed (writable data is preserved).')
             return 0

@@ -1,7 +1,7 @@
 from json import loads
-from os import environ
 from pytest import mark
 from pathlib import Path
+from sys import executable
 from subprocess import run
 from zipfile import ZipFile
 from tarfile import open as open_tar
@@ -9,44 +9,13 @@ from portablepy.models import BuildOptions
 from portablepy.builder import build_bundle
 from portablepy.verify import verify_bundle
 from portablepy.bytecode import compile_tree
-from portablepy.shortcuts import write_shortcut
-from portablepy.discovery import discover, probe
-from sys import platform, executable, version_info
+from portablepy.discovery import discover
 
 
-@mark.parametrize('status', [0, 7])
-@mark.parametrize('compiled', [False, True])
-def test_native_shortcut_relocates_and_preserves_arguments(tmp_path, status, compiled):
-    original = tmp_path / 'original'
-    original.mkdir()
-    (original / 'run.py').write_text(
-        'from sys import argv, exit\nfrom json import dumps\n'
-        f'print(dumps(argv[1:]))\nexit({status})\n'
-    )
-    if compiled:
-        compile_tree(original / 'run.py', Path(executable), strip=True)
-    name = write_shortcut(original, probe(Path(executable)), compiled=compiled)
-    moved = tmp_path / 'moved with spaces & punctuation!'
-    original.rename(moved)
-    arguments = ['two words', 'a&b', 'bang!', 'plain']
-    if platform == 'win32':
-        shell = environ.get('COMSPEC', 'cmd.exe')
-        quoted = ' '.join(f'"{value}"' for value in (str(moved / name), *arguments))
-        command = f'"{shell}" /d /s /c "{quoted}"'
-    else:
-        command = [str(moved / name), *arguments]
-    result = run(command, cwd=tmp_path, capture_output=True, text=True, timeout=20)
-    assert result.returncode == status, result.stdout + result.stderr
-    assert loads(result.stdout.splitlines()[0]) == arguments
-    assert ('Application failed' in result.stdout) == bool(status)
-
-
-@mark.parametrize(
-    'target,name', [('win32', 'run.cmd'), ('darwin', 'run.command'), ('linux', 'run.sh')]
-)
+@mark.parametrize('target', ['win32', 'darwin', 'linux'])
 @mark.parametrize('suffix', ['.zip', '.tar.gz'])
-def test_archives_include_verified_shortcut_and_unix_permissions(
-    tmp_path, monkeypatch, target, name, suffix
+def test_archives_use_python_launcher_without_shell_shortcuts(
+    tmp_path, monkeypatch, target, suffix
 ):
     source = tmp_path / 'source'
     source.mkdir()
@@ -58,30 +27,21 @@ def test_archives_include_verified_shortcut_and_unix_permissions(
     monkeypatch.setattr('portablepy.builder.run', lambda *args, **kwargs: None)
     archive_path = build_bundle(options)
     manifest = verify_bundle(archive_path)
-    assert name in manifest['files']
-    member = 'bundle/' + name
+    assert 'run.py' in manifest['files']
+    assert not {'run.cmd', 'run.command', 'run.sh'} & manifest['files'].keys()
     if suffix == '.zip':
         with ZipFile(archive_path) as archive:
-            content = archive.read(member)
-            if target != 'win32':
-                assert (archive.getinfo(member).external_attr >> 16) & 0o777 == 0o755
+            names = archive.namelist()
+            content = archive.read('bundle/README.txt')
     else:
         with open_tar(archive_path) as archive:
-            stream = archive.extractfile(member)
+            names = archive.getnames()
+            stream = archive.extractfile('bundle/README.txt')
             assert stream is not None
             content = stream.read()
-            if target != 'win32':
-                assert archive.getmember(member).mode == 0o755
-    assert b'run.py' in content
-    assert (b'\r\n' in content) == (target == 'win32')
-
-
-def test_free_threaded_shortcuts_select_free_threaded_python(tmp_path):
-    for target in ('win32', 'darwin', 'linux'):
-        name = write_shortcut(
-            tmp_path, {'platform': target, 'version': list(version_info[:2]), 'free_threaded': True}
-        )
-        assert '.'.join(map(str, version_info[:2])) + 't' in (tmp_path / name).read_text()
+    assert not {'bundle/run.cmd', 'bundle/run.command', 'bundle/run.sh'} & set(names)
+    assert b'python run.py' in content
+    assert all(name.encode() not in content for name in ('run.cmd', 'run.command', 'run.sh'))
 
 
 @mark.parametrize(
